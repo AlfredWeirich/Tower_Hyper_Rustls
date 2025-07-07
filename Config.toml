@@ -1,0 +1,126 @@
+
+# number of threads for Tokio to use for the server, if not set, it defaults to the number of CPU cores
+tokio_threads=16
+
+# Directory for logging. If not set, logging only to stdout
+# log_dir="log"
+
+
+[[Server]]
+# any name to identify server, no further meaning
+name = "echo_test" 
+
+# ip and port the server is listening
+# HOME
+#ip = "192.168.178.26"
+# HH
+#ip="192.168.178.31"
+ip="local"
+port = 1337
+# enable this server, defaults to false
+enabled=true
+
+
+# Protocol can be HTTP or HTTPS
+protocol = "HTTPS"
+
+# authentication method, can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
+# authentication = "ClientCert"
+# authentication = "JWT"
+
+# the final service, can be Echo or Router, all others default to Echo
+#service = "Router"
+service = "Echo"
+
+# the reverse routes for the Router Service
+[Server.ReverseRoutes]
+"/help" = "https://192.168.178.31:1338"
+"/static" = "http://192.168.178.31:1339"
+"/api" = "http://192.168.178.31:1330"
+
+
+# Path to Server certificates in case of HTTPS
+[Server.server_certs]
+# path/to/fullchain_self.pem
+#ssl_certificate = "./server_certs/fullchain11.pem"
+# path/to/privkey_self.pem
+#ssl_certificate_key  = "./server_certs/privkey11.pem"
+ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+
+# Path to Client certificates in case of authentication = "ClientCert"
+# we can define multiple certificates, eg
+# but if we define a CRL, we can only have this ca, the ca without crl is not allowed or rejected
+#[[Server.client_certs]]
+# path/to/ca_cert.pem
+#ssl_client_certificate   = "./client_certs/test2_crl/ca.cert.pem"
+# path/to/ca.crl.pem
+#ssl_crl="./client_certs/test2_crl/ca.crl.pem"
+[[Server.client_certs]]
+ssl_client_certificate   = "./client_certs/test1_crl/ca.cert.pem"
+ssl_crl="./client_certs/test1_crl/ca.crl.pem"
+
+
+# the layers configured/enabled for this server
+[Server.Layers]
+#enabled = ["Counter", "SimpleLogger", "Timing", "Inspection", "JWT", "RateLimiter:Simple"]
+#enabled = ["Counter", "SimpleLogger", "Timing", "Inspection", "RateLimiter:Simple"]
+enabled = []
+
+#  Path to keys in case of authentication = "JWT"
+#  this can be a list of jwt_public_keys
+[Server.Layers.JWT]
+jwt_public_keys=["./jwt/public_key.pem"]
+
+# Configure the Simple Rate Limiter
+[Server.Layers.RateLimiter]
+requests_per_second = 500000
+
+# Configure the Token Bucket Rate Limiter
+[Server.Layers.TokenBucketRateLimiter]
+max_capacity = 15
+refill = 8
+duration_micros = 1000
+
+# Configure the Delay layer
+[Server.Layers.Delay]
+delay_micros = 1
+
+# the (only) allowed pathes of the inspection layer
+[Server.AllowedPathes.GET]
+"/" = ["^/?$", "^/\\?name=.*$"]
+"/help" = ["^/help\\??(topic=.*)?$"]
+"/helpx" = ["^/helpx\\??(topic=.*)?$"]
+"/name" = ["^/name\\??id=\\d+$"]
+
+[Server.AllowedPathes.POST]
+"/" = ["^/?$", "^/\\?id=\\d+$"]
+"/name" = ["^/name\\??name=[a-zA-Z]+$"]
+"/address" = ["^/address\\??city=[a-zA-Z]+$"]
+
+[Server.AllowedPathes.PUT]
+"/" = ["^/?$", "^/\\?id=\\d+$"]
+
+
+# The next server config
+[[Server]]
+name = "base_service"
+# HOME
+#ip = "192.168.178.26"
+# HH
+ip="192.168.178.31"
+port = 1338
+protocol = "HTTPS"
+service = "Echo"
+enabled=false
+
+# Path to Server certificates in case of HTTPS
+[Server.server_certs]
+ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+
+[Server.Layers]
+enabled = ["SimpleLogger","Timing"]
+
+[Server.Layers.Delay]
+delay_micros = 250

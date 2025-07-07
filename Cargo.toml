@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "jwt_creator",
+    "server",
+    "client"
+]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

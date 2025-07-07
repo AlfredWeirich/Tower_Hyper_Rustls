@@ -16,9 +16,12 @@ use tracing::{error, trace};
 
 use server::utils;
 
+// On MacOs:
 // sudo sysctl -w kern.maxfiles=65536
 // sudo sysctl -w kern.maxfilesperproc=65536
 // sudo ulimit -n 65536
+//
+// Example to run the client
 // RUST_LOG=client=trace cargo run -p client --bin=client -- --ca="./server_certs/self_signed/myca.pem" -p / -j ./jwt/token1.jwt -s jwt -i 800
 //
 // RUST_LOG=client=trace cargo run -p client --bin=client --release -- --ca="./server_certs/self_signed/myca.pem" -p / -c ./client_certs/test1_crl/client1.cert.pem -k ./client_certs/test1_crl/client1.key.pem  -s mtls -i 65000
@@ -41,30 +44,7 @@ async fn main() -> Result<(), Error> {
     let uri = build_uri(&cli);
 
     // Launch N requests in parallel and print throughput
-    // let start = Instant::now();
-    // let futures = (0..cli.num_req)
-    //     .map(|_| do_request(&client, &cli, jwt_token.as_deref(), uri.clone()));
-    // let _results = join_all(futures).await;
-    /* let mut futs = FuturesUnordered::new();
-       for _ in 0..cli.num_req {
-           futs.push(do_request(&client, &cli, jwt_token.as_deref(), uri.clone()));
-       }
-       let start = Instant::now();
-       while let Some(_res) = futs.next().await {
-           match _res {
-               Ok(_)=>{}
-               Err(e) => {
-                   error!("Request failed: {e}");
-               }
-           }
-           // Optionally process each response here.
-           // e.g. trace!("Response {completed}: {:?}", _res);
-       }
-       let duration = start.elapsed();
-       let mean = cli.num_req as f64 / duration.as_secs_f64();
-       trace!("\nDuration: {}ms with {} paralell requests\nMean requests per second: {mean:.4}  --> per request: {}ms", duration.as_millis(),cli.num_req, 1000./mean);
-    */
-    let concurrency = cli.num_parallel as usize; // Tune this! Maybe 100, maybe 500 depending on your machine/network
+    let concurrency = cli.num_parallel as usize; // Tune this with parameter --num_parallel; Maybe 100, maybe 500 depending on your machine/network
     let total_requests = cli.num_req as usize; // Send this many total requests
 
     let mut futs = FuturesUnordered::new();
@@ -72,10 +52,10 @@ async fn main() -> Result<(), Error> {
     let mut completed = 0;
     let mut launched = 0;
 
-    // Kick off up to `concurrency` requests to start
+    // Kick off up to `concurrency` (cli.num_parallel) requests to start
     let first_batch = std::cmp::min(concurrency, total_requests);
     for _ in 0..first_batch {
-        futs.push(do_request(&client, &cli, jwt_token.as_deref(), uri.clone()));
+        futs.push(do_request(&client, &cli, jwt_token.as_deref(), uri.clone())); // fut has now a len() of first_batch
         launched += 1;
     }
 
@@ -184,8 +164,8 @@ fn validate_cli(cli: &Cli) {
         }
         Protocol::Jwt => {
             if cli.ca.is_none() {
-                error!("--ca <Root ca> must be set for JWT");
-                std::process::exit(1);
+                // error!("--ca <Root ca> must be set for JWT");
+                // std::process::exit(1);
             }
             if cli.jwt.is_none() {
                 error!("--jwt <jwt file> must be set for JWT");
@@ -194,8 +174,8 @@ fn validate_cli(cli: &Cli) {
         }
         Protocol::Mtls => {
             if cli.ca.is_none() {
-                error!("--ca <Root ca> must be set for mTLS");
-                std::process::exit(1);
+                // error!("--ca <Root ca> must be set for mTLS");
+                // std::process::exit(1);
             }
             if cli.cert.is_none() || cli.key.is_none() {
                 error!("--cert <client cert> and --key <client-key> must be set for mTLS");

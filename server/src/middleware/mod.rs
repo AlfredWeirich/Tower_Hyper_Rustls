@@ -13,7 +13,7 @@ pub use delay::DelayLayer;
 pub use echo::EchoService;
 pub use inspection::InspectionLayer;
 pub use jwt::JwtAuthLayer;
-pub use logger::SimpleLoggerLayer;
+pub use logger::LoggerLayer;
 pub use rate_limiter::{SimpleRateLimiterLayer, TokenBucketRateLimiterLayer};
 pub use router::RouterService;
 pub use timing::TimingLayer;

@@ -13,12 +13,12 @@ use tower::{Layer, Service};
 
 /// A Tower Layer that wraps a service with logging functionality, tagged with a server name.
 #[derive(Clone)]
-pub struct SimpleLoggerLayer {
+pub struct LoggerLayer {
     server_name: Arc<String>,
 }
 
-impl SimpleLoggerLayer {
-    /// Create a new SimpleLoggerLayer with a name for the service/server.
+impl LoggerLayer {
+    /// Create a new LoggerLayer with a name for the service/server.
     pub fn new(server_name: impl Into<String>) -> Self {
         Self {
             server_name: Arc::new(server_name.into()),
@@ -26,11 +26,11 @@ impl SimpleLoggerLayer {
     }
 }
 
-impl<S> Layer<S> for SimpleLoggerLayer {
-    type Service = SimpleLoggerService<S>;
+impl<S> Layer<S> for LoggerLayer {
+    type Service = LoggerService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        SimpleLoggerService {
+        LoggerService {
             inner,
             server_name: Arc::clone(&self.server_name),
         }
@@ -39,12 +39,12 @@ impl<S> Layer<S> for SimpleLoggerLayer {
 
 /// Middleware service that logs requests/responses and tags all logs with server_name.
 #[derive(Clone)]
-pub struct SimpleLoggerService<S> {
+pub struct LoggerService<S> {
     inner: S,
     server_name: Arc<String>,
 }
 
-impl<S, ReqBody> Service<Request<ReqBody>> for SimpleLoggerService<S>
+impl<S, ReqBody> Service<Request<ReqBody>> for LoggerService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,

@@ -29,7 +29,7 @@ use tokio_rustls::TlsAcceptor;
 mod middleware;
 use middleware::{
     CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, RouterService,
-    SimpleLoggerLayer, SimpleRateLimiterLayer, TimingLayer, TokenBucketRateLimiterLayer,
+    LoggerLayer, SimpleRateLimiterLayer, TimingLayer, TokenBucketRateLimiterLayer,
 };
 
 // TLS Configuration
@@ -380,9 +380,9 @@ fn apply_layers(
             CountingLayer::new(server_name).layer(svc).boxed_clone()
         }
 
-        MiddlewareLayer::SimpleLogger => {
+        MiddlewareLayer::Logger => {
             trace!("{}: Logger middleware enabled", server_name);
-            SimpleLoggerLayer::new(server_name).layer(svc).boxed_clone()
+            LoggerLayer::new(server_name).layer(svc).boxed_clone()
         }
         MiddlewareLayer::RateLimiter(RateLimiter::Simple(cfg)) => {
             trace!("{}: SimpleRateLimiter middleware enabled", server_name);

@@ -152,7 +152,7 @@ pub struct JwtAuthConfig {
 pub enum LayerSpec {
     Timing,
     Counter,
-    SimpleLogger,
+    Logger,
     RateLimiter(RateLimiterType),
     Delay,
     Inspection,
@@ -168,7 +168,7 @@ impl<'de> Deserialize<'de> for LayerSpec {
         match s.as_str() {
             "Timing" => Ok(LayerSpec::Timing),
             "Counter" => Ok(LayerSpec::Counter),
-            "SimpleLogger" => Ok(LayerSpec::SimpleLogger),
+            "Logger" => Ok(LayerSpec::Logger),
             "Delay" => Ok(LayerSpec::Delay),
             "Inspection" => Ok(LayerSpec::Inspection),
             "JwtAuth" | "JWT" => Ok(LayerSpec::JwtAuth),
@@ -189,7 +189,7 @@ impl<'de> Deserialize<'de> for LayerSpec {
 pub enum MiddlewareLayer {
     Timing,
     Counter,
-    SimpleLogger,
+    Logger,
     RateLimiter(RateLimiter),
     Delay(DelayConfig),
     Inspection,
@@ -215,7 +215,7 @@ impl Layers {
             match layer {
                 LayerSpec::Timing => result.push(MiddlewareLayer::Timing),
                 LayerSpec::Counter => result.push(MiddlewareLayer::Counter),
-                LayerSpec::SimpleLogger => result.push(MiddlewareLayer::SimpleLogger),
+                LayerSpec::Logger => result.push(MiddlewareLayer::Logger),
                 LayerSpec::Delay => {
                     let cfg = self
                         .delay_config

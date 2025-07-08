@@ -113,7 +113,6 @@ enabled = []
 - **Delay**
 - **Inspection**
 - **Logger**
-- **SimpleLogger**
 - **Timing**
 - **JWT**
 - **RateLimiter:Simple**
@@ -121,7 +120,7 @@ enabled = []
 
 Enable as a list, e.g.:
 ```toml
-enabled = ["Counter", "SimpleLogger", "Timing", "Inspection", "JWT", "RateLimiter:Simple"]
+enabled = ["Counter", "Logger", "Timing", "Inspection", "JWT", "RateLimiter:Simple"]
 ```
 
 ---
@@ -204,7 +203,7 @@ ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
 ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 
 [Server.Layers]
-enabled = ["SimpleLogger","Timing"]
+enabled = ["Logger","Timing"]
 
 [Server.Layers.Delay]
 delay_micros = 250

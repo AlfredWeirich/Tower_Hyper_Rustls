@@ -33,6 +33,7 @@ async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    // check cli params
     validate_cli(&cli);
 
     // read JWT token if jwt is specified

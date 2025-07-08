@@ -1,13 +1,14 @@
 
-# number of threads for Tokio to use for the server, if not set, it defaults to the number of CPU cores
-tokio_threads=16
+# number of threads for Tokio to use for the server, 
+# if not set, it defaults to the number of CPU cores times 2
+tokio_threads=64
 
 # Directory for logging. If not set, logging only to stdout
 # log_dir="log"
 
 
 [[Server]]
-# any name to identify server, no further meaning
+# any name to identify server for logging, no further meaning
 name = "echo_test" 
 
 # ip and port the server is listening

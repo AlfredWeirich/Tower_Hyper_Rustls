@@ -67,6 +67,8 @@ where
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+        // Extracts the method, path, and query string.
+        // Check if the request is allowed via the is_allowed function.
         let method = req.method().as_str().to_uppercase();
         let uri = req.uri().clone();
         let path = uri.path().to_string();
@@ -75,9 +77,13 @@ where
         let server_name = Arc::clone(&self.server_name);
 
         if allow {
+            // If the request matches one of the allowed regex patterns
             let mut inner = self.inner.clone();
             Box::pin(async move { inner.call(req).await })
         } else {
+            // if not allowed:
+            // Log the blocked attempt.
+            // Return a 403 Forbidden response with a simple body.
             tracing::warn!(
                 "{}: Blocked request: {} {}?{}",
                 server_name,
@@ -85,7 +91,6 @@ where
                 path,
                 query
             );
-            // Return 403 Forbidden
 
             #[cfg(feature = "boxed_body")]
             let body: ServiceRespBody =

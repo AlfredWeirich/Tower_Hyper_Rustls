@@ -125,6 +125,7 @@ impl Service<Request<Incoming>> for RouterService {
             let request_path = request_parts.uri.path();
 
             // Prioritized rule match (sorted longest first for prefix matching).
+            // Ensures for example /api matches /api, /api/v1, but not /apis
             let target_uri = rules
                 .iter()
                 .find(|(prefix, _)| {

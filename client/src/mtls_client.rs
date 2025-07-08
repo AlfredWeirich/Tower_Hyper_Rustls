@@ -10,7 +10,8 @@ use futures::stream::FuturesUnordered;
 
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
-use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use hyper_util::{client::legacy::{Client, connect::HttpConnector}, rt::TokioExecutor};
+use hyper_rustls::HttpsConnector;
 use rustls::{ClientConfig, RootCertStore};
 use tracing::{error, trace};
 
@@ -130,30 +131,6 @@ enum Protocol {
     Mtls,
 }
 
-/// Enum to hold either an HTTP or HTTPS client.
-enum MultiProtocolClient {
-    Http(Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>),
-    Https(
-        Client<
-            hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-            Full<Bytes>,
-        >,
-    ),
-}
-
-impl MultiProtocolClient {
-    /// Dispatch request based on client type.
-    pub async fn request(
-        &self,
-        req: Request<Full<Bytes>>,
-    ) -> Result<hyper::Response<hyper::body::Incoming>, hyper_util::client::legacy::Error> {
-        match self {
-            MultiProtocolClient::Http(client) => client.request(req).await,
-            MultiProtocolClient::Https(client) => client.request(req).await,
-        }
-    }
-}
-
 /// Validate CLI arguments according to the protocol requirements.
 fn validate_cli(cli: &Cli) {
     match cli.security {
@@ -222,12 +199,22 @@ fn build_tls_config(
     }
 }
 
+
 /// Build the appropriate HTTP(S) client based on the protocol.
-fn build_client(cli: &Cli) -> MultiProtocolClient {
+fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {
         Protocol::Http => {
-            let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
-            MultiProtocolClient::Http(client)
+            // let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+            // MultiProtocolClient::Http(client)
+            let root_store = build_root_store(&cli.ca);
+            let config = build_tls_config(root_store, None, None);
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(config)
+                .https_or_http()
+                .enable_http1()
+                .build();
+            let client = Client::builder(TokioExecutor::new()).build(https);
+            client
         }
         Protocol::Https | Protocol::Jwt => {
             let root_store = build_root_store(&cli.ca);
@@ -238,7 +225,7 @@ fn build_client(cli: &Cli) -> MultiProtocolClient {
                 .enable_http1()
                 .build();
             let client = Client::builder(TokioExecutor::new()).build(https);
-            MultiProtocolClient::Https(client)
+            client
         }
         Protocol::Mtls => {
             let root_store = build_root_store(&cli.ca);
@@ -249,7 +236,7 @@ fn build_client(cli: &Cli) -> MultiProtocolClient {
                 .enable_http1()
                 .build();
             let client = Client::builder(TokioExecutor::new()).build(https);
-            MultiProtocolClient::Https(client)
+            client
         }
     }
 }
@@ -283,7 +270,7 @@ fn build_uri(cli: &Cli) -> Uri {
 
 /// Send a single request, set Authorization if JWT, and return the response body as String.
 async fn do_request(
-    client: &MultiProtocolClient,
+    client: &Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     cli: &Cli,
     jwt_token: Option<&str>,
     uri: Uri,

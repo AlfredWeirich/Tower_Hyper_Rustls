@@ -9,7 +9,7 @@ tokio_threads=64
 
 [[Server]]
 # any name to identify server for logging, no further meaning
-name = "echo_test" 
+name = "router" 
 
 # ip and port the server is listening
 # HOME
@@ -18,6 +18,7 @@ name = "echo_test"
 #ip="192.168.178.31"
 ip="local"
 port = 1337
+
 # enable this server, defaults to false
 enabled=true
 
@@ -30,14 +31,32 @@ protocol = "HTTPS"
 # authentication = "JWT"
 
 # the final service, can be Echo or Router, all others default to Echo
-#service = "Router"
-service = "Echo"
+service = "Router"
+#service = "Echo"
+
+# the layers configured/enabled for this server
+[Server.Layers]
+enabled = ["Counter", "Logger", "Timing", "Inspection"]
+#enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
+#enabled = []
 
 # the reverse routes for the Router Service
 [Server.ReverseRoutes]
-"/help" = "https://192.168.178.31:1338"
-"/static" = "http://192.168.178.31:1339"
-"/api" = "http://192.168.178.31:1330"
+"/help" = "192.168.178.26:1338"
+"/static" = "192.168.178.31:1339"
+"/api" = "192.168.178.31:1330"
+
+# parameters for the Routing Layer
+[Server.RouterParams]
+# the protocoll, the router client shall use (https or https)
+protocoll="https"
+# root_ca for the client in router service
+sss_root_certificate = "xxx"
+# if router client shall use a jwt
+jwt   = "yyy"
+# if router client shall use client-cert
+ssl_client_certificate  = "ZZZ"
+ssl_client_key="KKK"
 
 
 # Path to Server certificates in case of HTTPS
@@ -54,19 +73,13 @@ ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 # but if we define a CRL, we can only have this ca, the ca without crl is not allowed or rejected
 #[[Server.client_certs]]
 # path/to/ca_cert.pem
-#ssl_client_certificate   = "./client_certs/test2_crl/ca.cert.pem"
+#ssl_client_ca   = "./client_certs/test2_crl/ca.cert.pem"
 # path/to/ca.crl.pem
 #ssl_crl="./client_certs/test2_crl/ca.crl.pem"
 [[Server.client_certs]]
-ssl_client_certificate   = "./client_certs/test1_crl/ca.cert.pem"
-ssl_crl="./client_certs/test1_crl/ca.crl.pem"
+ssl_client_ca   = "./client_certs/test1_crl/ca.cert.pem"
+ssl_client_crl="./client_certs/test1_crl/ca.crl.pem"
 
-
-# the layers configured/enabled for this server
-[Server.Layers]
-#enabled = ["Counter", "SimpleLogger", "Timing", "Inspection", "JWT", "RateLimiter:Simple"]
-#enabled = ["Counter", "SimpleLogger", "Timing", "Inspection", "RateLimiter:Simple"]
-enabled = []
 
 #  Path to keys in case of authentication = "JWT"
 #  this can be a list of jwt_public_keys
@@ -85,7 +98,7 @@ duration_micros = 1000
 
 # Configure the Delay layer
 [Server.Layers.Delay]
-delay_micros = 1
+delay_micros = 100
 
 # the (only) allowed pathes of the inspection layer
 [Server.AllowedPathes.GET]
@@ -107,13 +120,13 @@ delay_micros = 1
 [[Server]]
 name = "base_service"
 # HOME
-#ip = "192.168.178.26"
+ip = "192.168.178.26"
 # HH
-ip="192.168.178.31"
+#ip="192.168.178.31"
 port = 1338
-protocol = "HTTPS"
+protocol = "HTTP"
 service = "Echo"
-enabled=false
+enabled=true
 
 # Path to Server certificates in case of HTTPS
 [Server.server_certs]
@@ -121,7 +134,7 @@ ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
 ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 
 [Server.Layers]
-enabled = ["SimpleLogger","Timing"]
+enabled = ["Logger","Timing"]
 
 [Server.Layers.Delay]
 delay_micros = 250

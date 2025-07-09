@@ -73,9 +73,24 @@ pub struct ServerConfig {
     #[serde(rename = "ReverseRoutes")]
     pub rev_routes: Option<HashMap<String, String>>, // prefix -> backend_uri
 
+    #[serde(rename = "RouterParams")]
+    pub router_params: Option<RouterParams>,
+
     #[serde(skip)]
     pub compiled_allowed_pathes: Option<CompiledAllowedPathes>,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+// the router service is also a HTTP/HTTPS-client for sending requests
+// so we must configure a client
+pub struct RouterParams {
+    pub protocoll:  Option<String>,
+    pub sss_root_certificate: Option<String>,
+    pub jwt: Option<String>,
+    pub ssl_client_certificate: Option<String>,
+    pub ssl_client_key: Option<String>,
+}
+
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerCertConfig {
@@ -83,10 +98,11 @@ pub struct ServerCertConfig {
     pub ssl_certificate_key: String,
 }
 
+// the servers client_ca and crl in case of mTLS
 #[derive(Debug, Deserialize, Clone)]
 pub struct ClientCertConfig {
-    pub ssl_client_certificate: String,
-    pub ssl_crl: Option<String>,
+    pub ssl_client_ca: String,
+    pub sl_client_crl: Option<String>,
 }
 
 impl ServerConfig {

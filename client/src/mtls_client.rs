@@ -167,25 +167,13 @@ fn validate_cli(cli: &Cli) {
     }
 }
 
-/// Build a root certificate store from system and custom roots.
-fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
-    let mut root_store = RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    match ca_path {
-        Some(path) => {
-            let root_cert = utils::load_certs(path, "mtlsclient");
-            root_store.add_parsable_certificates(root_cert);
-        }
-        None => {}
-    }
-    root_store
-}
+
 
 /// Build the appropriate HTTP(S) client based on the protocol.
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {
         Protocol::Http => {
-            let root_store = build_root_store(&cli.ca);
+            let root_store = utils::build_root_store(&cli.ca);
             let client_config = utils::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(client_config)
@@ -196,7 +184,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
             client
         }
         Protocol::Https | Protocol::Jwt => {
-            let root_store = build_root_store(&cli.ca);
+            let root_store = utils::build_root_store(&cli.ca);
             let tls_client_config = utils::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
@@ -207,7 +195,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
             client
         }
         Protocol::Mtls => {
-            let root_store = build_root_store(&cli.ca);
+            let root_store = utils::build_root_store(&cli.ca);
             let tls_client_config =
                 utils::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
             let https = hyper_rustls::HttpsConnectorBuilder::new()

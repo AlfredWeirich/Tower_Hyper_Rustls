@@ -186,3 +186,17 @@ pub fn build_tls_client_config(
             .with_no_client_auth(),
     }
 }
+
+/// Build a root certificate store from system and custom roots.
+pub fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
+    let mut root_store = RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    match ca_path {
+        Some(path) => {
+            let root_cert = load_certs(path, "mtlsclient");
+            root_store.add_parsable_certificates(root_cert);
+        }
+        None => {}
+    }
+    root_store
+}

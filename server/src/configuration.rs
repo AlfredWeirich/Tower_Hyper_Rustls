@@ -84,13 +84,81 @@ pub struct ServerConfig {
 // the router service is also a HTTP/HTTPS-client for sending requests
 // so we must configure a client
 pub struct RouterParams {
-    pub protocoll:  Option<String>,
+    // http or https, defaults to http
+    pub protocoll: Option<String>,
+    // mTLS or JWT or None
+    // in case of not None, we need HTTPS
+    pub authentication: Option<String>,
+    // in case of https, we need a root cert
     pub sss_root_certificate: Option<String>,
+    // in case of auth==JWT, we need HTTPS an a JWT
     pub jwt: Option<String>,
+    // in case of mTLS, we need HTTPS and the client certificates
     pub ssl_client_certificate: Option<String>,
     pub ssl_client_key: Option<String>,
 }
+impl RouterParams {
+    pub fn validate(&self, server_name: &str) -> Result<(), Error> {
+        let protocol = self.protocoll.as_deref().unwrap_or("http").to_lowercase();
 
+        if protocol != "http" && protocol != "https" {
+            return Err(Error::msg(format!(
+                "Server '{}': invalid protocol '{}'. Must be 'http' or 'https'",
+                server_name, protocol
+            )));
+        }
+
+        // If protocol is https, root cert must be defined
+        if protocol == "https" && self.sss_root_certificate.is_none() {
+            return Err(Error::msg(format!(
+                "Server '{}': protocol is 'https' but [RouterParams.sss_root_certificate] is missing",
+                server_name
+            )));
+        }
+
+        let auth = self.authentication.as_deref().unwrap_or("").to_lowercase();
+
+        match auth.as_str() {
+            "" => {} // No authentication – fine
+            "jwt" => {
+                if protocol != "https" {
+                    return Err(Error::msg(format!(
+                        "Server '{}': JWT authentication requires 'https' protocol",
+                        server_name
+                    )));
+                }
+                if self.jwt.is_none() {
+                    return Err(Error::msg(format!(
+                        "Server '{}': JWT authentication requires [RouterParams.jwt]",
+                        server_name
+                    )));
+                }
+            }
+            "mtls" => {
+                if protocol != "https" {
+                    return Err(Error::msg(format!(
+                        "Server '{}': mTLS authentication requires 'https' protocol",
+                        server_name
+                    )));
+                }
+                if self.ssl_client_certificate.is_none() || self.ssl_client_key.is_none() {
+                    return Err(Error::msg(format!(
+                        "Server '{}': mTLS requires [RouterParams.ssl_client_certificate] and [ssl_client_key]",
+                        server_name
+                    )));
+                }
+            }
+            other => {
+                return Err(Error::msg(format!(
+                    "Server '{}': unknown authentication method '{}'. Use '', 'JWT' or 'mTLS'",
+                    server_name, other
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerCertConfig {
@@ -135,13 +203,31 @@ impl ServerConfig {
             .unwrap_or(false)
     }
 
-    pub fn init_compiled_routes(&mut self) -> Result<(), Error> {
+    pub fn init_compiled_allowed_pathes(&mut self) -> Result<(), Error> {
         self.compiled_allowed_pathes = Some(CompiledAllowedPathes::from_raw(&self.allowed_pathes)?);
         Ok(())
     }
 
     pub fn build_middleware_layers(&self) -> Result<Vec<MiddlewareLayer>, Error> {
         self.layers.build_middleware_layers()
+    }
+    pub fn normalize_router_protocol(&mut self) {
+        if let Some(params) = self.router_params.as_mut() {
+            match params.protocoll.as_deref() {
+                Some("http") | Some("https") => {} // valid
+                Some(other) => {
+                    tracing::warn!(
+                        "Server '{}': Invalid router protocol '{}', defaulting to 'http'",
+                        self.name,
+                        other
+                    );
+                    params.protocoll = Some("http".to_string());
+                }
+                None => {
+                    params.protocoll = Some("http".to_string());
+                }
+            }
+        }
     }
 }
 
@@ -379,9 +465,26 @@ pub fn get_configuration(config_file: &str) -> Result<Config, Error> {
     let toml_str = fs::read_to_string(config_file)?;
     let mut config: Config = toml::from_str(&toml_str)?;
 
+    // do some checks on parameters for each of the servers
     for server in config.servers.iter_mut() {
-        server.init_compiled_routes()?;
+        // if service layer is router, we need router_params
+        if server.service.eq_ignore_ascii_case("Router") {
+            let params = server.router_params.as_ref().ok_or_else(|| {
+                Error::msg(format!(
+                    "Server '{}' uses service = 'Router' but [RouterParams] is missing",
+                    server.name
+                ))
+            })?;
 
+            params.validate(&server.name)?;
+        }
+        // set default for router client protokoll
+        server.normalize_router_protocol();
+
+        // for the inspection layer: the allowed pathes regex must be pre-compiled
+        server.init_compiled_allowed_pathes()?;
+
+        // in case of TLS, we need server certificates
         if server.use_tls() && server.server_certs.is_none() {
             return Err(Error::msg(format!(
                 "Server '{}' uses HTTPS but [server_certs] is missing",

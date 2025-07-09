@@ -50,6 +50,9 @@ enabled = ["Counter", "Logger", "Timing", "Inspection"]
 [Server.RouterParams]
 # the protocoll, the router client shall use (https or https)
 protocoll="https"
+# the authentication method, the routers client should use
+# can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
+#authentication = "mTLS"
 # root_ca for the client in router service
 sss_root_certificate = "xxx"
 # if router client shall use a jwt

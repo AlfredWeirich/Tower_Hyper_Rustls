@@ -105,10 +105,17 @@ impl ServerConfig {
         self.protocol.eq_ignore_ascii_case("https")
     }
 
-    pub fn use_client_cert(&self) -> bool {
+    pub fn use_client_cert_auth(&self) -> bool {
         self.authentication
             .as_ref()
             .map(|a| a.eq_ignore_ascii_case("clientcert"))
+            .unwrap_or(false)
+    }
+
+    pub fn use_jwt_auth(&self) -> bool {
+        self.authentication
+            .as_ref()
+            .map(|a| a.eq_ignore_ascii_case("jwt"))
             .unwrap_or(false)
     }
 

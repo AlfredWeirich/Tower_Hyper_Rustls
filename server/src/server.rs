@@ -335,7 +335,7 @@ fn build_service_stack(config: &ServerConfig) -> Result<BoxedCloneService, Error
     let server_name = config.name.as_str();
     let base_service = match service_name {
         "Echo" => EchoService::new(server_name).boxed_clone(),
-        "Router" => RouterService::new(config, server_name).boxed_clone(),
+        "Router" => RouterService::new(config).boxed_clone(),
         _ => {
             error!("Unknown service name: {}", service_name);
             EchoService::new(server_name).boxed_clone()

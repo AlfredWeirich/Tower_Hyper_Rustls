@@ -10,11 +10,8 @@ use futures::stream::FuturesUnordered;
 
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
+use hyper_util::{client::legacy::{Client, connect::HttpConnector}, rt::TokioExecutor};
 use hyper_rustls::HttpsConnector;
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::TokioExecutor,
-};
 use rustls::{ClientConfig, RootCertStore};
 use tracing::{error, trace};
 
@@ -182,7 +179,7 @@ fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
 }
 
 /// Create a rustls ClientConfig, with or without mTLS.
-fn build_tls_config(
+fn build_tls_client_config(
     root_store: RootCertStore,
     cert: Option<&str>,
     key: Option<&str>,
@@ -202,16 +199,15 @@ fn build_tls_config(
     }
 }
 
+
 /// Build the appropriate HTTP(S) client based on the protocol.
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {
         Protocol::Http => {
-            // let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
-            // MultiProtocolClient::Http(client)
             let root_store = build_root_store(&cli.ca);
-            let config = build_tls_config(root_store, None, None);
+            let client_config = build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(config)
+                .with_tls_config(client_config)
                 .https_or_http()
                 .enable_http1()
                 .build();
@@ -220,9 +216,9 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
         }
         Protocol::Https | Protocol::Jwt => {
             let root_store = build_root_store(&cli.ca);
-            let config = build_tls_config(root_store, None, None);
+            let tls_client_config = build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(config)
+                .with_tls_config(tls_client_config)
                 .https_only()
                 .enable_http1()
                 .build();
@@ -231,9 +227,9 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
         }
         Protocol::Mtls => {
             let root_store = build_root_store(&cli.ca);
-            let config = build_tls_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
+            let tls_client_config = build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
             let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(config)
+                .with_tls_config(tls_client_config)
                 .https_only()
                 .enable_http1()
                 .build();

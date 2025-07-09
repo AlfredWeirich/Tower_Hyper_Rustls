@@ -167,8 +167,6 @@ fn validate_cli(cli: &Cli) {
     }
 }
 
-
-
 /// Build the appropriate HTTP(S) client based on the protocol.
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {

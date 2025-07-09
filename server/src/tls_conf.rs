@@ -80,10 +80,7 @@ pub fn tls_config(
                 root_store.add(ca).map_err(|e| {
                     Error::msg(format!("{}: Failed to add CA: {:?}", server_name, e))
                 })?;
-                trace!(
-                    "{}: Added CA from {}",
-                    server_name, config.ssl_client_ca
-                );
+                trace!("{}: Added CA from {}", server_name, config.ssl_client_ca);
             }
             // Optionally load and add a CRL for certificate revocation checks
             match config.sl_client_crl {

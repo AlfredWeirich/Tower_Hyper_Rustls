@@ -89,9 +89,8 @@ where
                 .and_then(|s| s.strip_prefix("Bearer "))
                 .map(str::trim);
 
-
-            // If a valid token is found, it's verified against the public keys. 
-            // If successful, the parsed claims are attached to the request (via req.extensions_mut()), 
+            // If a valid token is found, it's verified against the public keys.
+            // If successful, the parsed claims are attached to the request (via req.extensions_mut()),
             // making them accessible to downstream layers or handlers.
             match token {
                 Some(token) => match verify_jwt(token, &decoding_keys) {

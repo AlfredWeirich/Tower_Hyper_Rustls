@@ -74,7 +74,7 @@ pub fn tls_config(
         let mut crls: Vec<CertificateRevocationListDer<'_>> = Vec::new();
         for config in client_certs {
             // Load one or more CA certs for this config
-            let ca_certs = load_certs(&config.ssl_client_certificate, server_name);
+            let ca_certs = load_certs(&config.ssl_client_ca, server_name);
             for ca in ca_certs {
                 // Add each CA cert to the root store
                 root_store.add(ca).map_err(|e| {
@@ -82,11 +82,11 @@ pub fn tls_config(
                 })?;
                 trace!(
                     "{}: Added CA from {}",
-                    server_name, config.ssl_client_certificate
+                    server_name, config.ssl_client_ca
                 );
             }
             // Optionally load and add a CRL for certificate revocation checks
-            match config.ssl_crl {
+            match config.sl_client_crl {
                 Some(ref crl_path) => {
                     let crl = CertificateRevocationListDer::from_pem_file(crl_path)?;
                     trace!("{}: Added CRL from {}", server_name, crl_path);

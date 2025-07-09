@@ -90,7 +90,7 @@ pub struct RouterParams {
     // in case of not None, we need HTTPS
     pub authentication: Option<String>,
     // in case of https, we need a root cert
-    pub sss_root_certificate: Option<String>,
+    pub ssl_root_certificate: Option<String>,
     // in case of auth==JWT, we need HTTPS an a JWT
     pub jwt: Option<String>,
     // in case of mTLS, we need HTTPS and the client certificates
@@ -109,7 +109,7 @@ impl RouterParams {
         }
 
         // If protocol is https, root cert must be defined
-        if protocol == "https" && self.sss_root_certificate.is_none() {
+        if protocol == "https" && self.ssl_root_certificate.is_none() {
             return Err(Error::msg(format!(
                 "Server '{}': protocol is 'https' but [RouterParams.sss_root_certificate] is missing",
                 server_name

@@ -15,7 +15,9 @@ use tower::Service;
 use tracing::trace;
 
 use server::ServiceRespBody;
-use server::SrvError; // BoxBody<Bytes, SrvError>
+use server::SrvError;
+
+use crate::configuration::ServerConfig; // BoxBody<Bytes, SrvError>
 
 /// The `RouterService` is a Tower-compatible HTTP service that performs
 /// prefix-based routing of incoming requests to different backend URIs.
@@ -45,7 +47,9 @@ impl RouterService {
     /// # Returns
     ///
     /// Returns a fully initialized RouterService.
-    pub fn new(routes: Option<HashMap<String, String>>, server_name: impl Into<String>) -> Self {
+    pub fn new(config: &ServerConfig, server_name: impl Into<String>) -> Self {
+
+        let routes=config.rev_routes.clone();
         let server_name = server_name.into();
 
         // Build HTTPS connector with native root certificates.
@@ -99,6 +103,7 @@ impl Service<Request<Incoming>> for RouterService {
     /// Checks if the service is ready to accept a request.
     /// Always returns ready (this service is always ready).
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        //
         trace!("poll_ready im router");
         Poll::Ready(Ok(()))
     }
@@ -115,7 +120,7 @@ impl Service<Request<Incoming>> for RouterService {
     /// Returns a future that resolves to the proxied response from the backend,
     /// or an error response if no routing rule matches.
     fn call(&mut self, request: Request<Incoming>) -> Self::Future {
-        trace!("call im router");
+        //trace!("call im router");
         let rules = Arc::clone(&self.rules);
         let client = self.client.clone();
         let server_name = self.server_name.clone();

@@ -255,7 +255,7 @@ async fn handle_connection(
 
             // Route to appropriate HTTP handler
             if let Err(err) = handle_https_connection(tls_stream, service, alpn).await {
-                if config.use_client_cert() {
+                if config.use_client_cert_auth() {
                     error!(
                         "{}: mTLS connection error: {:?} / {}",
                         config.name, err, ip_addr
@@ -281,7 +281,7 @@ fn build_tls_acceptor(config: &ServerConfig) -> Result<Option<TlsAcceptor>, anyh
     if !config.use_tls() {
         return Ok(None);
     }
-    let require_client_auth = config.use_client_cert();
+    let require_client_auth = config.use_client_cert_auth();
     let server_certs = get_server_certs(config);
     let client_certs = if require_client_auth {
         get_client_certs(config)

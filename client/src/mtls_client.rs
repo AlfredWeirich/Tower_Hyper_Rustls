@@ -10,8 +10,11 @@ use futures::stream::FuturesUnordered;
 
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
-use hyper_util::{client::legacy::{Client, connect::HttpConnector}, rt::TokioExecutor};
 use hyper_rustls::HttpsConnector;
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
 use rustls::{ClientConfig, RootCertStore};
 use tracing::{error, trace};
 
@@ -198,7 +201,6 @@ fn build_tls_config(
             .with_no_client_auth(),
     }
 }
-
 
 /// Build the appropriate HTTP(S) client based on the protocol.
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {

@@ -164,3 +164,25 @@ pub fn verify_jwt(token: &str, decoding_keys: &[DecodingKey]) -> Result<Claims, 
     }
     Err(Error::msg("JWT verification failed with all keys"))
 }
+
+use rustls::{ClientConfig, RootCertStore};
+/// Create a rustls ClientConfig, with or without mTLS.
+pub fn build_tls_client_config(
+    root_store: RootCertStore,
+    cert: Option<&str>,
+    key: Option<&str>,
+) -> ClientConfig {
+    match (cert, key) {
+        (Some(cert_path), Some(key_path)) => {
+            let certs = load_certs(cert_path, "mtlsclient");
+            let key = load_single_key(key_path, "mtlsclient");
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_client_auth_cert(certs, key)
+                .expect("Failed to build client config")
+        }
+        _ => ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    }
+}

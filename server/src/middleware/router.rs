@@ -50,7 +50,7 @@ impl RouterService {
     pub fn new(config: &ServerConfig, server_name: impl Into<String>) -> Self {
         let routes = config.rev_routes.clone();
         let server_name = server_name.into();
-        
+
         let router_params = config.router_params.as_ref();
         trace!("Router params: {:#?}", router_params);
         let router_params = config.router_params.as_ref().unwrap();
@@ -75,25 +75,75 @@ impl RouterService {
         // Ensure longest prefixes are checked first for correct routing.
         rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
 
-        match proto {
-            "http" => {}
-            "https" => {}
-            _ => {}
-        }
-
-        // Build HTTPS connector with native root certificates.
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("no native root CA certificates found")
-            .https_or_http()
-            .enable_http1()
-            .build();
-
-        // Construct a Hyper client with the HTTPS connector.
+        use crate::utils::build_root_store;
+        use crate::utils::build_tls_client_config;
         let client: Client<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
             ServiceRespBody,
-        > = Client::builder(TokioExecutor::new()).build(https);
+        > = match proto {
+            "http" => {
+                let root_store = build_root_store(&router_params.ssl_root_certificate);
+                let client_config = build_tls_client_config(root_store, None, None);
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(client_config)
+                    .https_or_http()
+                    .enable_http1()
+                    .build();
+                let client = Client::builder(TokioExecutor::new()).build(https);
+                client
+            }
+            "https" => {
+                match router_params.authentication.as_deref() {
+                    Some("mtls") => {
+                        // handle mTLS
+                        let root_store = build_root_store(&router_params.ssl_root_certificate);
+                        let tls_client_config = build_tls_client_config(
+                            root_store,
+                            router_params.ssl_client_certificate.as_deref(),
+                            router_params.ssl_client_key.as_deref(),
+                        );
+                        let https = hyper_rustls::HttpsConnectorBuilder::new()
+                            .with_tls_config(tls_client_config)
+                            .https_only()
+                            .enable_http1()
+                            .build();
+                        let client = Client::builder(TokioExecutor::new()).build(https);
+                        client
+                    }
+                    None | Some("jwt") => {
+                        let root_store = build_root_store(&router_params.ssl_root_certificate);
+                        let tls_client_config = build_tls_client_config(root_store, None, None);
+                        let https = hyper_rustls::HttpsConnectorBuilder::new()
+                            .with_tls_config(tls_client_config)
+                            .https_only()
+                            .enable_http1()
+                            .build();
+                        let client = Client::builder(TokioExecutor::new()).build(https);
+                        client
+                    }
+                    Some(_) => {
+                        unreachable!()
+                    }
+                }
+            }
+            _ => {
+                unreachable!()
+            }
+        };
+
+        // // Build HTTPS connector with native root certificates.
+        // let https = hyper_rustls::HttpsConnectorBuilder::new()
+        //     .with_native_roots()
+        //     .expect("no native root CA certificates found")
+        //     .https_or_http()
+        //     .enable_http1()
+        //     .build();
+
+        // // Construct a Hyper client with the HTTPS connector.
+        // let client: Client<
+        //     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        //     ServiceRespBody,
+        // > = Client::builder(TokioExecutor::new()).build(https);
 
         RouterService {
             client,

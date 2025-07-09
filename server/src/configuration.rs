@@ -196,12 +196,12 @@ impl ServerConfig {
             .unwrap_or(false)
     }
 
-    pub fn use_jwt_auth(&self) -> bool {
-        self.authentication
-            .as_ref()
-            .map(|a| a.eq_ignore_ascii_case("jwt"))
-            .unwrap_or(false)
-    }
+    // pub fn use_jwt_auth(&self) -> bool {
+    //     self.authentication
+    //         .as_ref()
+    //         .map(|a| a.eq_ignore_ascii_case("jwt"))
+    //         .unwrap_or(false)
+    // }
 
     pub fn init_compiled_allowed_pathes(&mut self) -> Result<(), Error> {
         self.compiled_allowed_pathes = Some(CompiledAllowedPathes::from_raw(&self.allowed_pathes)?);

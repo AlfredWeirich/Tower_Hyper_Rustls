@@ -10,9 +10,12 @@ use futures::stream::FuturesUnordered;
 
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
-use hyper_util::{client::legacy::{Client, connect::HttpConnector}, rt::TokioExecutor};
 use hyper_rustls::HttpsConnector;
-use rustls::{ClientConfig, RootCertStore};
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
+use rustls::RootCertStore;
 use tracing::{error, trace};
 
 use server::utils;
@@ -178,34 +181,12 @@ fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
     root_store
 }
 
-/// Create a rustls ClientConfig, with or without mTLS.
-fn build_tls_client_config(
-    root_store: RootCertStore,
-    cert: Option<&str>,
-    key: Option<&str>,
-) -> ClientConfig {
-    match (cert, key) {
-        (Some(cert_path), Some(key_path)) => {
-            let certs = utils::load_certs(cert_path, "mtlsclient");
-            let key = utils::load_single_key(key_path, "mtlsclient");
-            ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_client_auth_cert(certs, key)
-                .expect("Failed to build client config")
-        }
-        _ => ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    }
-}
-
-
 /// Build the appropriate HTTP(S) client based on the protocol.
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {
         Protocol::Http => {
             let root_store = build_root_store(&cli.ca);
-            let client_config = build_tls_client_config(root_store, None, None);
+            let client_config = utils::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(client_config)
                 .https_or_http()
@@ -216,7 +197,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
         }
         Protocol::Https | Protocol::Jwt => {
             let root_store = build_root_store(&cli.ca);
-            let tls_client_config = build_tls_client_config(root_store, None, None);
+            let tls_client_config = utils::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
                 .https_only()
@@ -227,7 +208,8 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
         }
         Protocol::Mtls => {
             let root_store = build_root_store(&cli.ca);
-            let tls_client_config = build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
+            let tls_client_config =
+                utils::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
                 .https_only()

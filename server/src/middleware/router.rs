@@ -51,6 +51,11 @@ impl RouterService {
 
         let routes=config.rev_routes.clone();
         let server_name = server_name.into();
+        let router_params = config.router_params.as_ref();
+
+        let proto = router_params
+            .and_then(|rp| rp.protocoll.as_deref())
+            .unwrap_or("https"); // default fallback
 
         // Build HTTPS connector with native root certificates.
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -67,7 +72,7 @@ impl RouterService {
         > = Client::builder(TokioExecutor::new()).build(https);
 
         // Process and sort routing rules by prefix length (descending).
-        let mut rules_vec: Vec<_> = match routes {
+       /*  let mut rules_vec: Vec<_> = match routes {
             Some(map) => map
                 .into_iter()
                 .filter_map(|(prefix, uri_str)| match uri_str.parse::<Uri>() {
@@ -79,6 +84,26 @@ impl RouterService {
                             e
                         );
                         None
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        }; */
+        let mut rules_vec: Vec<_> = match routes {
+            Some(map) => map
+                .into_iter()
+                .filter_map(|(prefix, host_port)| {
+                    let full_uri = format!("{}://{}", proto, host_port);
+                    match full_uri.parse::<Uri>() {
+                        Ok(uri) => Some((prefix, uri)),
+                        Err(e) => {
+                            tracing::warn!(
+                                "{server_name}: Invalid URI ({}): {}",
+                                full_uri,
+                                e
+                            );
+                            None
+                        }
                     }
                 })
                 .collect(),

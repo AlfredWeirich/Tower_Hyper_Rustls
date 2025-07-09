@@ -8,136 +8,185 @@ tokio_threads=64
 
 
 [[Server]]
-# any name to identify server for logging, no further meaning
-name = "router" 
+#***************************************************************************
+#***************************************************************************
+#
+# First Server
+# 
+#***************************************************************************
+#***************************************************************************
 
-# ip and port the server is listening
-# HOME
-#ip = "192.168.178.26"
-# HH
-#ip="192.168.178.31"
-ip="local"
-port = 1337
+        ############################################################################
+        #
+        # Server Configuration
+        #
+        ############################################################################
+                # any name to identify server for logging, no further meaning
+                name = "router" 
 
-# enable this server, defaults to false
-enabled=true
+                # ip and port the server is listening
+                # HOME
+                #ip = "192.168.178.26"
+                # HH
+                #ip="192.168.178.31"
+                ip="local"
+                port = 1337
 
-
-# Protocol can be HTTP or HTTPS
-protocol = "HTTPS"
-
-# authentication method, can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
-# authentication = "ClientCert"
-# authentication = "JWT"
-
-# the final service, can be Echo or Router, all others default to Echo
-service = "Router"
-#service = "Echo"
-
-# the layers configured/enabled for this server
-[Server.Layers]
-enabled = ["Counter", "Logger", "Timing", "Inspection"]
-#enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
-#enabled = []
-
-# the reverse routes for the Router Service
-[Server.ReverseRoutes]
-"/help" = "192.168.178.26:1338"
-"/static" = "192.168.178.31:1339"
-"/api" = "192.168.178.31:1330"
-
-# parameters for the Routing Layer
-[Server.RouterParams]
-# the protocoll, the router client shall use (https or https)
-protocoll="https"
-# the authentication method, the routers client should use
-# can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
-#authentication = "mTLS"
-# root_ca for the client in router service
-sss_root_certificate = "xxx"
-# if router client shall use a jwt
-jwt   = "yyy"
-# if router client shall use client-cert
-ssl_client_certificate  = "ZZZ"
-ssl_client_key="KKK"
+                # enable this server, defaults to false
+                enabled=true
 
 
-# Path to Server certificates in case of HTTPS
-[Server.server_certs]
-# path/to/fullchain_self.pem
-#ssl_certificate = "./server_certs/fullchain11.pem"
-# path/to/privkey_self.pem
-#ssl_certificate_key  = "./server_certs/privkey11.pem"
-ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+                # Protocol can be HTTP or HTTPS
+                protocol = "HTTPS"
 
-# Path to Client certificates in case of authentication = "ClientCert"
-# we can define multiple certificates, eg
-# but if we define a CRL, we can only have this ca, the ca without crl is not allowed or rejected
-#[[Server.client_certs]]
-# path/to/ca_cert.pem
-#ssl_client_ca   = "./client_certs/test2_crl/ca.cert.pem"
-# path/to/ca.crl.pem
-#ssl_crl="./client_certs/test2_crl/ca.crl.pem"
-[[Server.client_certs]]
-ssl_client_ca   = "./client_certs/test1_crl/ca.cert.pem"
-ssl_client_crl="./client_certs/test1_crl/ca.crl.pem"
+                # authentication method, can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
+                # authentication = "ClientCert"
+                # authentication = "JWT"
 
+                # the final service, can be Echo or Router, all others default to Echo
+                service = "Router"
+                #service = "Echo"
 
-#  Path to keys in case of authentication = "JWT"
-#  this can be a list of jwt_public_keys
-[Server.Layers.JWT]
-jwt_public_keys=["./jwt/public_key.pem"]
+                # the layers configured/enabled for this server
+                [Server.Layers]
+                enabled = ["Counter", "Logger", "Timing", "Inspection"]
+                #enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
+                #enabled = []
 
-# Configure the Simple Rate Limiter
-[Server.Layers.RateLimiter]
-requests_per_second = 500000
+                # 
+                # Path to Server certificates in case of HTTPS
+                #
+                        [Server.server_certs]
+                        # path/to/fullchain_self.pem
+                        #ssl_certificate = "./server_certs/fullchain11.pem"
+                        # path/to/privkey_self.pem
+                        #ssl_certificate_key  = "./server_certs/privkey11.pem"
+                        ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+                        ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 
-# Configure the Token Bucket Rate Limiter
-[Server.Layers.TokenBucketRateLimiter]
-max_capacity = 15
-refill = 8
-duration_micros = 1000
-
-# Configure the Delay layer
-[Server.Layers.Delay]
-delay_micros = 100
-
-# the (only) allowed pathes of the inspection layer
-[Server.AllowedPathes.GET]
-"/" = ["^/?$", "^/\\?name=.*$"]
-"/help" = ["^/help\\??(topic=.*)?$"]
-"/helpx" = ["^/helpx\\??(topic=.*)?$"]
-"/name" = ["^/name\\??id=\\d+$"]
-
-[Server.AllowedPathes.POST]
-"/" = ["^/?$", "^/\\?id=\\d+$"]
-"/name" = ["^/name\\??name=[a-zA-Z]+$"]
-"/address" = ["^/address\\??city=[a-zA-Z]+$"]
-
-[Server.AllowedPathes.PUT]
-"/" = ["^/?$", "^/\\?id=\\d+$"]
+                # 
+                # Path to Client certificates in case of authentication = "ClientCert"
+                #
+                        # we can define multiple certificates, eg
+                        # but if we define a CRL, we can only have this ca, the ca without crl is not allowed or rejected
+                        #[[Server.client_certs]]
+                        # path/to/ca_cert.pem
+                        #ssl_client_ca   = "./client_certs/test2_crl/ca.cert.pem"
+                        # path/to/ca.crl.pem
+                        #ssl_crl="./client_certs/test2_crl/ca.crl.pem"
+                        [[Server.client_certs]]
+                        ssl_client_ca   = "./client_certs/test1_crl/ca.cert.pem"
+                        ssl_client_crl="./client_certs/test1_crl/ca.crl.pem"
 
 
-# The next server config
+                #  
+                # Path to keys in case of authentication = "JWT"
+                # this can be a list of jwt_public_keys
+                #
+                        [Server.Layers.JWT]
+                        jwt_public_keys=["./jwt/public_key.pem"]
+
+        ############################################################################
+        #
+        # ROUTING Layer
+        #
+        ############################################################################
+                # the reverse routes for the Router Service
+                [Server.ReverseRoutes]
+                "/help" = "192.168.178.26:1338"
+                "/static" = "192.168.178.31:1339"
+                "/api" = "192.168.178.31:1330"
+
+                # parameters for the Routing Layer
+                [Server.RouterParams]
+                # the protocoll, the router client shall use (https or https)
+                protocoll="http"
+                # the authentication method, the routers client should use
+                # can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
+                #authentication = "mTLS"
+                # root_ca for the client in router service
+                ssl_root_certificate = "./server_certs/self_signed/myca.pem"
+                # if router client shall use a jwt
+                # jwt   = "./jwt/public_key.pem"# The next server config
+                # if router client shall use client-cert
+                # ssl_client_certificate  = "./client_certs/test1_crl/client1.cert.pem"
+                # ssl_client_key="./client_certs/test1_crl/client1.key.pem"
+
+
+
+        ############################################################################
+        #
+        # Simple Rate Limiter
+        #
+        ############################################################################
+                [Server.Layers.RateLimiter]
+                requests_per_second = 500000
+
+        ############################################################################
+        #
+        # Token Bucket Rate Limiter
+        #
+        ############################################################################
+                [Server.Layers.TokenBucketRateLimiter]
+                max_capacity = 15
+                refill = 8
+                duration_micros = 1000
+
+        ############################################################################
+        #
+        # Delay Layer
+        #
+        ############################################################################
+                [Server.Layers.Delay]
+                delay_micros = 100
+
+        ############################################################################
+        #
+        # Inspection Layer
+        #
+        ############################################################################
+                # the (only) allowed pathes of the inspection layer
+                [Server.AllowedPathes.GET]
+                "/" = ["^/?$", "^/\\?name=.*$"]
+                "/help" = ["^/help\\??(topic=.*)?$"]
+                "/helpx" = ["^/helpx\\??(topic=.*)?$"]
+                "/name" = ["^/name\\??id=\\d+$"]
+
+                [Server.AllowedPathes.POST]
+                "/" = ["^/?$", "^/\\?id=\\d+$"]
+                "/name" = ["^/name\\??name=[a-zA-Z]+$"]
+                "/address" = ["^/address\\??city=[a-zA-Z]+$"]
+
+                [Server.AllowedPathes.PUT]
+                "/" = ["^/?$", "^/\\?id=\\d+$"]
+
+
 [[Server]]
-name = "base_service"
-# HOME
-ip = "192.168.178.26"
-# HH
-#ip="192.168.178.31"
-port = 1338
-protocol = "HTTP"
-service = "Echo"
-enabled=true
+#***************************************************************************
+#***************************************************************************
+#
+# Second Server
+# 
+#***************************************************************************
+#***************************************************************************
 
-# Path to Server certificates in case of HTTPS
-[Server.server_certs]
-ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+            name = "base_service"
+            # HOME
+            ip = "192.168.178.26"
+            # HH
+            #ip="192.168.178.31"
+            port = 1338
+            protocol = "HTTP"
+            service = "Echo"
+            enabled=true
 
-[Server.Layers]
-enabled = ["Logger","Timing"]
+            # Path to Server certificates in case of HTTPS
+            [Server.server_certs]
+            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+            ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 
-[Server.Layers.Delay]
-delay_micros = 250
+            [Server.Layers]
+            enabled = ["Logger","Timing"]
+
+            [Server.Layers.Delay]
+            delay_micros = 250

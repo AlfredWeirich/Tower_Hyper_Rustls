@@ -28,8 +28,8 @@ use tokio_rustls::TlsAcceptor;
 // Middleware
 mod middleware;
 use middleware::{
-    CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, RouterService,
-    LoggerLayer, SimpleRateLimiterLayer, TimingLayer, TokenBucketRateLimiterLayer,
+    CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, LoggerLayer,
+    RouterService, SimpleRateLimiterLayer, TimingLayer, TokenBucketRateLimiterLayer,
 };
 
 // TLS Configuration
@@ -335,9 +335,7 @@ fn build_service_stack(config: &ServerConfig) -> Result<BoxedCloneService, Error
     let server_name = config.name.as_str();
     let base_service = match service_name {
         "Echo" => EchoService::new(server_name).boxed_clone(),
-        "Router" => {
-            RouterService::new(config, server_name).boxed_clone()
-        },
+        "Router" => RouterService::new(config, server_name).boxed_clone(),
         _ => {
             error!("Unknown service name: {}", service_name);
             EchoService::new(server_name).boxed_clone()

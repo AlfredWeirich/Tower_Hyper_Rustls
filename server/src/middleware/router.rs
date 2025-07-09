@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -8,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, StatusCode, body::Incoming, http::uri::Uri};
+use hyper::{Request, Response, StatusCode, body::Incoming, header, http::uri::Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tower::Service;
@@ -33,7 +32,8 @@ pub struct RouterService {
     /// Vector of routing rules: (path prefix, backend URI), sorted by prefix length (longest first).
     rules: Arc<Vec<(String, Uri)>>, // (prefix, backend_uri)
     /// The server name (for logging and diagnostics).
-    server_name: String,
+    config: ServerConfig,
+    jwt_token: Option<String>,
 }
 
 impl RouterService {
@@ -47,9 +47,9 @@ impl RouterService {
     /// # Returns
     ///
     /// Returns a fully initialized RouterService.
-    pub fn new(config: &ServerConfig, server_name: impl Into<String>) -> Self {
+    pub fn new(config: &ServerConfig) -> Self {
         let routes = config.rev_routes.clone();
-        let server_name = server_name.into();
+        let server_name = config.name.to_string();
 
         let router_params = config.router_params.as_ref();
         trace!("Router params: {:#?}", router_params);
@@ -145,10 +145,18 @@ impl RouterService {
         //     ServiceRespBody,
         // > = Client::builder(TokioExecutor::new()).build(https);
 
+        let jwt_token = config.router_params.clone().unwrap().jwt;
+
+        // {
+
+        //     config.router_params.unwrap().jwt.unwrap().
+        // }
+
         RouterService {
             client,
             rules: Arc::new(rules_vec),
-            server_name,
+            config: config.clone(),
+            jwt_token,
         }
     }
 }
@@ -181,7 +189,8 @@ impl Service<Request<Incoming>> for RouterService {
         //trace!("call im router");
         let rules = Arc::clone(&self.rules);
         let client = self.client.clone();
-        let server_name = self.server_name.clone();
+        let server_name = self.config.name.clone();
+        let jwt_token = self.jwt_token.clone(); // <-- clone the Option<String>
 
         Box::pin(async move {
             let (request_parts, request_body) = request.into_parts();
@@ -243,6 +252,19 @@ impl Service<Request<Incoming>> for RouterService {
 
             // Always use HTTP/1.1 for backend requests.
             response_parts.version = hyper::Version::HTTP_11;
+
+            // insert jwt in header
+            match jwt_token {
+                Some(token) => {
+                    // Insert JWT header or similar logic here
+                    response_parts.headers.insert(
+                        "Authorization",
+                        hyper::header::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                    );
+                }
+                None => {}
+            }
+
             // Optional: update the Host header to match the backend (commented out).
             // response_parts.headers.insert(
             //     hyper::header::HOST,

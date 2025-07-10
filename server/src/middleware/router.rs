@@ -7,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, StatusCode, body::Incoming, header, http::uri::Uri};
+use hyper::{Request, Response, StatusCode, body::Incoming, http::uri::Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tower::Service;
@@ -54,13 +54,13 @@ impl RouterService {
         let router_params = config.router_params.as_ref();
         trace!("Router params: {:#?}", router_params);
         let router_params = config.router_params.as_ref().unwrap();
-        let proto = router_params.protocoll.as_deref().unwrap();
+        let proto = router_params.protocol.as_deref().unwrap();
 
         let mut rules_vec: Vec<_> = match routes {
             Some(map) => map
                 .into_iter()
                 .filter_map(|(prefix, host_port)| {
-                    let full_uri = format!("{}://{}", proto, host_port);
+                    let full_uri = format!("{proto}://{host_port}");
                     match full_uri.parse::<Uri>() {
                         Ok(uri) => Some((prefix, uri)),
                         Err(e) => {
@@ -89,8 +89,7 @@ impl RouterService {
                     .https_or_http()
                     .enable_http1()
                     .build();
-                let client = Client::builder(TokioExecutor::new()).build(https);
-                client
+                Client::builder(TokioExecutor::new()).build(https)
             }
             "https" => {
                 match router_params.authentication.as_deref() {
@@ -107,8 +106,7 @@ impl RouterService {
                             .https_only()
                             .enable_http1()
                             .build();
-                        let client = Client::builder(TokioExecutor::new()).build(https);
-                        client
+                        Client::builder(TokioExecutor::new()).build(https)
                     }
                     None | Some("jwt") => {
                         let root_store = build_root_store(&router_params.ssl_root_certificate);
@@ -118,8 +116,7 @@ impl RouterService {
                             .https_only()
                             .enable_http1()
                             .build();
-                        let client = Client::builder(TokioExecutor::new()).build(https);
-                        client
+                        Client::builder(TokioExecutor::new()).build(https)
                     }
                     Some(_) => {
                         unreachable!()
@@ -190,7 +187,7 @@ impl Service<Request<Incoming>> for RouterService {
         let rules = Arc::clone(&self.rules);
         let client = self.client.clone();
         let server_name = self.config.name.clone();
-        let jwt_token = self.jwt_token.clone(); // <-- clone the Option<String>
+        let jwt_token = self.jwt_token.clone();
 
         Box::pin(async move {
             let (request_parts, request_body) = request.into_parts();
@@ -254,15 +251,12 @@ impl Service<Request<Incoming>> for RouterService {
             response_parts.version = hyper::Version::HTTP_11;
 
             // insert jwt in header
-            match jwt_token {
-                Some(token) => {
-                    // Insert JWT header or similar logic here
-                    response_parts.headers.insert(
-                        "Authorization",
-                        hyper::header::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-                    );
-                }
-                None => {}
+            if let Some(token) = jwt_token {
+                // Insert JWT header or similar logic here
+                response_parts.headers.insert(
+                    "Authorization",
+                    hyper::header::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
             }
 
             // Optional: update the Host header to match the backend (commented out).
@@ -301,7 +295,7 @@ impl Service<Request<Incoming>> for RouterService {
                 let bytes = body.collect().await?.to_bytes();
                 let response: Response<ServiceRespBody> =
                     Response::from_parts(parts, Full::new(bytes));
-                return Ok(response);
+                Ok(response)
             }
         })
     }

@@ -85,7 +85,7 @@ pub struct ServerConfig {
 // so we must configure a client
 pub struct RouterParams {
     // http or https, defaults to http
-    pub protocoll: Option<String>,
+    pub protocol: Option<String>,
     // mTLS or JWT or None
     // in case of not None, we need HTTPS
     pub authentication: Option<String>,
@@ -99,20 +99,18 @@ pub struct RouterParams {
 }
 impl RouterParams {
     pub fn validate(&self, server_name: &str) -> Result<(), Error> {
-        let protocol = self.protocoll.as_deref().unwrap_or("http").to_lowercase();
+        let protocol = self.protocol.as_deref().unwrap_or("http").to_lowercase();
 
         if protocol != "http" && protocol != "https" {
             return Err(Error::msg(format!(
-                "Server '{}': invalid protocol '{}'. Must be 'http' or 'https'",
-                server_name, protocol
+                "Server '{server_name}': invalid protocol '{protocol}'. Must be 'http' or 'https'",
             )));
         }
 
         // If protocol is https, root cert must be defined
         if protocol == "https" && self.ssl_root_certificate.is_none() {
             return Err(Error::msg(format!(
-                "Server '{}': protocol is 'https' but [RouterParams.sss_root_certificate] is missing",
-                server_name
+                "Server '{server_name}': protocol is 'https' but [RouterParams.sss_root_certificate] is missing",
             )));
         }
 
@@ -123,35 +121,30 @@ impl RouterParams {
             "jwt" => {
                 if protocol != "https" {
                     return Err(Error::msg(format!(
-                        "Server '{}': JWT authentication requires 'https' protocol",
-                        server_name
+                        "Server '{server_name}': JWT authentication requires 'https' protocol",
                     )));
                 }
                 if self.jwt.is_none() {
                     return Err(Error::msg(format!(
-                        "Server '{}': JWT authentication requires [RouterParams.jwt]",
-                        server_name
+                        "Server '{server_name}': JWT authentication requires [RouterParams.jwt]",
                     )));
                 }
             }
             "mtls" => {
                 if protocol != "https" {
                     return Err(Error::msg(format!(
-                        "Server '{}': mTLS authentication requires 'https' protocol",
-                        server_name
+                        "Server '{server_name}': mTLS authentication requires 'https' protocol"
                     )));
                 }
                 if self.ssl_client_certificate.is_none() || self.ssl_client_key.is_none() {
                     return Err(Error::msg(format!(
-                        "Server '{}': mTLS requires [RouterParams.ssl_client_certificate] and [ssl_client_key]",
-                        server_name
+                        "Server '{server_name}': mTLS requires [RouterParams.ssl_client_certificate] and [ssl_client_key]"
                     )));
                 }
             }
             other => {
                 return Err(Error::msg(format!(
-                    "Server '{}': unknown authentication method '{}'. Use '', 'JWT' or 'mTLS'",
-                    server_name, other
+                    "Server '{server_name}': unknown authentication method '{other}'. Use '', 'JWT' or 'mTLS'",
                 )));
             }
         }
@@ -170,7 +163,7 @@ pub struct ServerCertConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ClientCertConfig {
     pub ssl_client_ca: String,
-    pub sl_client_crl: Option<String>,
+    pub ssl_client_crl: Option<String>,
 }
 
 impl ServerConfig {
@@ -182,7 +175,7 @@ impl ServerConfig {
         };
         let addr = format!("{}:{}", ip_str, self.port);
         addr.parse()
-            .map_err(|e| Error::msg(format!("Invalid server address: {}", e)))
+            .map_err(|e| Error::msg(format!("Invalid server address: {e}")))
     }
 
     pub fn use_tls(&self) -> bool {
@@ -213,7 +206,7 @@ impl ServerConfig {
     }
     pub fn normalize_router_protocol(&mut self) {
         if let Some(params) = self.router_params.as_mut() {
-            match params.protocoll.as_deref() {
+            match params.protocol.as_deref() {
                 Some("http") | Some("https") => {} // valid
                 Some(other) => {
                     tracing::warn!(
@@ -221,10 +214,10 @@ impl ServerConfig {
                         self.name,
                         other
                     );
-                    params.protocoll = Some("http".to_string());
+                    params.protocol = Some("http".to_string());
                 }
                 None => {
-                    params.protocoll = Some("http".to_string());
+                    params.protocol = Some("http".to_string());
                 }
             }
         }
@@ -285,11 +278,10 @@ impl<'de> Deserialize<'de> for LayerSpec {
                 "Simple" => Ok(LayerSpec::RateLimiter(RateLimiterType::Simple)),
                 "TokenBucket" => Ok(LayerSpec::RateLimiter(RateLimiterType::TokenBucket)),
                 _ => Err(serde::de::Error::custom(format!(
-                    "Unknown rate limiter: {}",
-                    other
+                    "Unknown rate limiter: {other}"
                 ))),
             },
-            _ => Err(serde::de::Error::custom(format!("Unknown layer: {}", s))),
+            _ => Err(serde::de::Error::custom(format!("Unknown layer: {s}"))),
         }
     }
 }
@@ -420,7 +412,7 @@ impl CompiledAllowedPathes {
                     let regexes = patterns
                         .iter()
                         .map(|p| {
-                            Regex::new(p).map_err(|e| Error::msg(format!("Invalid regex: {}", e)))
+                            Regex::new(p).map_err(|e| Error::msg(format!("Invalid regex: {e}")))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     compiled.insert(k.clone(), regexes);
@@ -440,7 +432,7 @@ impl CompiledAllowedPathes {
         let full_path = if query.is_empty() {
             path.to_string()
         } else {
-            format!("{}?{}", path, query)
+            format!("{path}?{query}")
         };
 
         let map = match method {

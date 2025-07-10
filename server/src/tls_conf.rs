@@ -65,8 +65,7 @@ pub fn tls_config(
         // Ensure client CA configs are provided if mTLS is enabled
         let client_certs = client_ca_configs.ok_or_else(|| {
             Error::msg(format!(
-                "{}: Client certs required for mTLS, but none provided.",
-                server_name
+                "{server_name}: Client certs required for mTLS, but none provided.",
             ))
         })?;
 
@@ -77,19 +76,16 @@ pub fn tls_config(
             let ca_certs = load_certs(&config.ssl_client_ca, server_name);
             for ca in ca_certs {
                 // Add each CA cert to the root store
-                root_store.add(ca).map_err(|e| {
-                    Error::msg(format!("{}: Failed to add CA: {:?}", server_name, e))
-                })?;
-                trace!("{}: Added CA from {}", server_name, config.ssl_client_ca);
+                root_store
+                    .add(ca)
+                    .map_err(|e| Error::msg(format!("{server_name}: Failed to add CA: {e}")))?;
+                trace!("{server_name}: Added CA from {}", config.ssl_client_ca);
             }
             // Optionally load and add a CRL for certificate revocation checks
-            match config.sl_client_crl {
-                Some(ref crl_path) => {
-                    let crl = CertificateRevocationListDer::from_pem_file(crl_path)?;
-                    trace!("{}: Added CRL from {}", server_name, crl_path);
-                    crls.push(crl);
-                }
-                None => {}
+            if let Some(ref crl_path) = config.ssl_client_crl {
+                let crl = CertificateRevocationListDer::from_pem_file(crl_path)?;
+                trace!("{server_name}: Added CRL from {crl_path}");
+                crls.push(crl);
             }
         }
 
@@ -100,8 +96,7 @@ pub fn tls_config(
             .build()
             .map_err(|e| {
                 Error::msg(format!(
-                    "{}: Failed to build client verifier: {:?}",
-                    server_name, e
+                    "{server_name}: Failed to build client verifier: {e}",
                 ))
             })?;
 
@@ -109,13 +104,13 @@ pub fn tls_config(
         config_builder
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(server_certs, server_key)
-            .map_err(|e| Error::msg(format!("{}: Invalid cert/key: {:?}", server_name, e)))?
+            .map_err(|e| Error::msg(format!("{server_name}: Invalid cert/key: {e}")))?
     } else {
         // No client authentication; set up HTTPS only
         config_builder
             .with_no_client_auth()
             .with_single_cert(server_certs, server_key)
-            .map_err(|e| Error::msg(format!("{}: Invalid cert/key: {:?}", server_name, e)))?
+            .map_err(|e| Error::msg(format!("{server_name}: Invalid cert/key: {e}")))?
     };
 
     let mut config = config;

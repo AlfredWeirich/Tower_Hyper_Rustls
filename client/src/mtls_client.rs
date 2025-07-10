@@ -15,7 +15,7 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
-use rustls::RootCertStore;
+
 use tracing::{error, trace};
 
 use server::utils;
@@ -178,8 +178,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .https_or_http()
                 .enable_http1()
                 .build();
-            let client = Client::builder(TokioExecutor::new()).build(https);
-            client
+            Client::builder(TokioExecutor::new()).build(https)
         }
         Protocol::Https | Protocol::Jwt => {
             let root_store = utils::build_root_store(&cli.ca);
@@ -189,8 +188,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .https_only()
                 .enable_http1()
                 .build();
-            let client = Client::builder(TokioExecutor::new()).build(https);
-            client
+            Client::builder(TokioExecutor::new()).build(https)
         }
         Protocol::Mtls => {
             let root_store = utils::build_root_store(&cli.ca);
@@ -201,8 +199,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .https_only()
                 .enable_http1()
                 .build();
-            let client = Client::builder(TokioExecutor::new()).build(https);
-            client
+            Client::builder(TokioExecutor::new()).build(https)
         }
     }
 }

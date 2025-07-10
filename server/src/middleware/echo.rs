@@ -56,7 +56,7 @@ impl Service<Request<Incoming>> for EchoService {
                 }
                 (&hyper::Method::GET, "/help") => {
                     tracing::info!("{}: GET /help", server_name);
-                    let msg = format!("=====> This is the help page from {}.\n", server_name);
+                    let msg = format!("=====> This is the help page from {server_name}.\n");
                     #[cfg(feature = "boxed_body")]
                     let body: ServiceRespBody =
                         Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();

@@ -304,7 +304,7 @@ fn build_tls_acceptor(config: &ServerConfig) -> Result<Option<TlsAcceptor>, anyh
 /// - `server_certs`: Server's certificate/key configuration
 /// - `client_certs`: Client certificate(s), if mTLS enabled
 /// - `require_client_auth`: Whether to require mTLS
-/// Returns:
+///   Returns:
 /// - Ok(TlsAcceptor) or error
 pub fn setup_tls(
     server_name: &str,
@@ -325,7 +325,7 @@ pub fn setup_tls(
 ///
 /// Params:
 /// - `config`: Server config (defines middleware, allowed paths, etc)
-/// Returns:
+///   Returns:
 /// - Ok(BoxedCloneService) or error (if layer fails to build)
 fn build_service_stack(config: &ServerConfig) -> Result<BoxedCloneService, Error> {
     let layers = config.build_middleware_layers()?;
@@ -470,15 +470,15 @@ where
     match alpn.as_deref() {
         Some("h2") => handle_http2_connection(tls_stream, service)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Hyper error: {}", e))),
+            .map_err(|e| io::Error::other(format!("Hyper error: {e}"))),
         Some("http/1.1") | Some("http/1.0") | None => handle_http1_connection(tls_stream, service)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Hyper error: {}", e))),
+            .map_err(|e| io::Error::other(format!("Hyper error: {e}"))),
         Some(other) => {
             // Unsupported protocol (could log, reject, or fallback)
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!("Unsupported ALPN protocol: {}", other),
+                format!("Unsupported ALPN protocol: {other}"),
             ))
         }
     }
@@ -501,10 +501,9 @@ where
     I: AsyncRead + AsyncWrite + Unpin,
 {
     // hyper::server::conn::http1 only serves HTTP/1.x
-    let res = hyper::server::conn::http1::Builder::new()
+    hyper::server::conn::http1::Builder::new()
         .serve_connection(TokioIo::new(stream), service)
-        .await;
-    res
+        .await
 }
 
 /// Sets up structured tracing/logging.
@@ -515,7 +514,7 @@ where
 ///
 /// Params:
 /// - `log_dir`: Optional directory for rolling log file output
-/// Returns:
+///   Returns:
 /// - Ok(()) or error if setup fails
 fn setup_tracing(log_dir: Option<&str>) -> Result<(), Error> {
     let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
@@ -549,7 +548,7 @@ fn setup_tracing(log_dir: Option<&str>) -> Result<(), Error> {
 
 /// Utility: Gets the server's certificate config from server config.
 /// - Panics/aborts if not set but TLS is enabled, to prevent silent misconfiguration.
-fn get_server_certs<'a>(config: &'a ServerConfig) -> &'a ServerCertConfig {
+fn get_server_certs(config: &ServerConfig) -> &ServerCertConfig {
     config.server_certs.as_ref().unwrap_or_else(|| {
         error!(
             "{}: TLS is enabled but no [server_certs] provided",
@@ -561,7 +560,7 @@ fn get_server_certs<'a>(config: &'a ServerConfig) -> &'a ServerCertConfig {
 
 /// Utility: Gets the client certificate config for mTLS from server config.
 /// - Panics/aborts if mTLS is enabled but certs missing.
-fn get_client_certs<'a>(config: &'a ServerConfig) -> Option<&'a [ClientCertConfig]> {
+fn get_client_certs(config: &ServerConfig) -> Option<&[ClientCertConfig]> {
     match config.client_certs.as_ref() {
         Some(certs) if !certs.is_empty() => Some(certs.as_slice()),
         _ => {

@@ -29,16 +29,16 @@ use serde::{Deserialize, Serialize};
 pub fn load_certs(path: &str, server_name: &str) -> Vec<CertificateDer<'static>> {
     // Attempt to read the entire certificate file
     let data = std::fs::read(path).unwrap_or_else(|_| {
-        error!("{}: Failed to read {}", server_name, path);
-        panic!("{}: Failed to read {}", server_name, path);
+        error!("{server_name}: Failed to read {path}");
+        panic!("{server_name}: Failed to read {path}");
     });
 
     // Parse the certificates from PEM-encoded input and collect them into a vector
     rustls_pemfile::certs(&mut &data[..])
         .collect::<Result<Vec<_>, _>>()
         .unwrap_or_else(|_| {
-            error!("{}: Invalid cert in {}", server_name, path);
-            panic!("{}: Invalid cert in {}", server_name, path);
+            error!("{server_name}: Invalid cert in {path}");
+            panic!("{server_name}: Invalid cert in {path}");
         })
 }
 
@@ -64,8 +64,8 @@ pub fn load_certs(path: &str, server_name: &str) -> Vec<CertificateDer<'static>>
 pub fn load_single_key(path: &str, server_name: &str) -> PrivateKeyDer<'static> {
     // Read the private key file contents into memory
     let key_data = std::fs::read(path).unwrap_or_else(|_| {
-        error!("{}: Failed to read {}", server_name, path);
-        panic!("{}: Failed to read {}", server_name, path);
+        error!("{server_name}: Failed to read {path}");
+        panic!("{server_name}: Failed to read {path}");
     });
 
     // Attempt to parse one or more private keys in PKCS#8 format
@@ -79,17 +79,14 @@ pub fn load_single_key(path: &str, server_name: &str) -> PrivateKeyDer<'static> 
     // Ensure exactly one key is used; log and panic if none, warn if multiple
     match keys.len() {
         0 => {
-            error!("{}: No private key found in server key file", server_name);
-            panic!("{}: No private key found in server key file", server_name);
+            error!("{server_name}: No private key found in server key file");
+            panic!("{server_name}: No private key found in server key file");
         }
         1 => {
-            trace!("{}: Single private key loaded successfully.", server_name);
+            trace!("{server_name}: Single private key loaded successfully.");
         }
         _ => {
-            warn!(
-                "{}: Multiple private keys found, using the first one",
-                server_name
-            );
+            warn!("{server_name}: Multiple private keys found, using the first one");
         }
     }
 
@@ -191,12 +188,9 @@ pub fn build_tls_client_config(
 pub fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
     let mut root_store = RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    match ca_path {
-        Some(path) => {
-            let root_cert = load_certs(path, "mtlsclient");
-            root_store.add_parsable_certificates(root_cert);
-        }
-        None => {}
+    if let Some(path) = ca_path {
+        let root_cert = load_certs(path, "mtlsclient");
+        root_store.add_parsable_certificates(root_cert);
     }
     root_store
 }

@@ -99,8 +99,8 @@ tokio_threads=64
 
                 # parameters for the Routing Layer
                 [Server.RouterParams]
-                # the protocoll, the router client shall use (https or https)
-                protocoll="http"
+                # the protocol, the router client shall use (https or https)
+                protocol="http"
                 # the authentication method, the routers client should use
                 # can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
                 #authentication = "mTLS"

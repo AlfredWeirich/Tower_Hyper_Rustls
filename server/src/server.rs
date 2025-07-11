@@ -44,7 +44,7 @@ use configuration::{
 };
 
 // Utilities
-mod utils;
+use common;
 
 // === Type Alias ===
 // These are type aliases for ergonomics, not repeated here for brevity.

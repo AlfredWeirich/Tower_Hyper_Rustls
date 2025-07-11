@@ -14,7 +14,7 @@ use hyper_util::service::TowerToHyperService;
 
 pub mod error;
 pub use error::SrvError;
-pub mod utils;
+
 
 #[cfg(feature = "boxed_body")]
 pub type ServiceRespBody = BoxBody<Bytes, SrvError>;

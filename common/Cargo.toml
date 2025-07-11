@@ -1,0 +1,13 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustls = "0.23.26"
+rustls-pemfile = "2.2.0"
+anyhow = "1.0.98"
+tracing = "0.1.41"
+serde = { version = "1.0.219", features = ["derive"] }
+jsonwebtoken = "9.3.1"
+webpki-roots = "1.0.1"

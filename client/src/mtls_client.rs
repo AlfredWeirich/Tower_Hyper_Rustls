@@ -18,7 +18,7 @@ use hyper_util::{
 
 use tracing::{error, trace};
 
-use server::utils;
+use common;
 
 // On MacOs:
 // sudo sysctl -w kern.maxfiles=65536
@@ -171,8 +171,8 @@ fn validate_cli(cli: &Cli) {
 fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
     match cli.security {
         Protocol::Http => {
-            let root_store = utils::build_root_store(&cli.ca);
-            let client_config = utils::build_tls_client_config(root_store, None, None);
+            let root_store = common::build_root_store(&cli.ca);
+            let client_config = common::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(client_config)
                 .https_or_http()
@@ -181,8 +181,8 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
             Client::builder(TokioExecutor::new()).build(https)
         }
         Protocol::Https | Protocol::Jwt => {
-            let root_store = utils::build_root_store(&cli.ca);
-            let tls_client_config = utils::build_tls_client_config(root_store, None, None);
+            let root_store = common::build_root_store(&cli.ca);
+            let tls_client_config = common::build_tls_client_config(root_store, None, None);
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
                 .https_only()
@@ -191,9 +191,9 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
             Client::builder(TokioExecutor::new()).build(https)
         }
         Protocol::Mtls => {
-            let root_store = utils::build_root_store(&cli.ca);
+            let root_store = common::build_root_store(&cli.ca);
             let tls_client_config =
-                utils::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
+                common::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
                 .https_only()

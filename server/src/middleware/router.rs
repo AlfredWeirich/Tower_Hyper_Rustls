@@ -16,7 +16,7 @@ use tracing::trace;
 use server::ServiceRespBody;
 use server::SrvError;
 
-use crate::configuration::ServerConfig; // BoxBody<Bytes, SrvError>
+use crate::configuration::ServerConfig;
 
 /// The `RouterService` is a Tower-compatible HTTP service that performs
 /// prefix-based routing of incoming requests to different backend URIs.
@@ -75,8 +75,8 @@ impl RouterService {
         // Ensure longest prefixes are checked first for correct routing.
         rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
 
-        use crate::utils::build_root_store;
-        use crate::utils::build_tls_client_config;
+        use common::build_root_store;
+        use common::build_tls_client_config;
         let client: Client<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
             ServiceRespBody,

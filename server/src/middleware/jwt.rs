@@ -22,7 +22,7 @@ use server::SrvError;
 
 use jsonwebtoken::DecodingKey; // <-- ADDED
 
-use crate::utils::{Claims, load_decoding_keys, verify_jwt};
+use common::{Claims, load_decoding_keys, verify_jwt};
 
 #[derive(Clone)]
 pub struct JwtAuthLayer {

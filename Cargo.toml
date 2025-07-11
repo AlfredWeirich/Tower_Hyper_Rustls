@@ -3,7 +3,7 @@ members = [
     "jwt_creator",
     "server",
     "client"
-]
+, "common"]
 resolver = "3"
 
 [profile.release]

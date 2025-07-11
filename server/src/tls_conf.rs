@@ -10,7 +10,7 @@ use rustls_pki_types::{CertificateRevocationListDer, pem::PemObject};
 use crate::ClientCertConfig;
 use crate::configuration::ServerCertConfig;
 
-use crate::utils::{load_certs, load_single_key};
+use common::{load_certs, load_single_key};
 use anyhow::Error;
 
 /// Builds and returns a Rustls `ServerConfig` with mutual TLS (mTLS) support.

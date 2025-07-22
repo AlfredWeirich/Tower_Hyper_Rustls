@@ -192,8 +192,11 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
         }
         Protocol::Mtls => {
             let root_store = common::build_root_store(&cli.ca);
-            let tls_client_config =
-                common::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref());
+            let tls_client_config = common::build_tls_client_config(
+                root_store,
+                cli.cert.as_deref(),
+                cli.key.as_deref(),
+            );
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls_client_config)
                 .https_only()

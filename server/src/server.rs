@@ -43,9 +43,6 @@ use configuration::{
     ServerCertConfig, ServerConfig, get_configuration,
 };
 
-// Utilities
-use common;
-
 // === Type Alias ===
 // These are type aliases for ergonomics, not repeated here for brevity.
 use server::BoxedCloneService;
@@ -110,8 +107,8 @@ fn main() -> Result<(), anyhow::Error> {
 ///
 /// Returns:
 /// - Always returns `Ok(())` (unless server task panics), as this function never completes.
-async fn main_async(config: Config) -> Result<(), anyhow::Error> {
-    for server_config in config.servers {
+async fn main_async(config: &'static Config) -> Result<(), anyhow::Error> {
+    for server_config in &config.servers {
         match server_config.enabled {
             Some(true) => { /* continue below */ }
             _ => {
@@ -119,11 +116,10 @@ async fn main_async(config: Config) -> Result<(), anyhow::Error> {
                 continue;
             }
         }
-        let server_config = Arc::new(server_config);
 
         // Start each enabled server on its own async task/thread.
         tokio::spawn(async move {
-            start_single_server(server_config.clone()).await;
+            start_single_server(&server_config).await;
         });
     }
     // Block forever (until killed)
@@ -142,7 +138,7 @@ async fn main_async(config: Config) -> Result<(), anyhow::Error> {
 ///
 /// Params:
 /// - `server_config`: Shared reference to the per-server configuration
-async fn start_single_server(server_config: Arc<ServerConfig>) {
+async fn start_single_server(server_config: &'static ServerConfig) {
     // Step 1: Resolve server bind address
     let addr = match server_config.get_server_ip() {
         Ok(addr) => {
@@ -193,7 +189,7 @@ async fn start_single_server(server_config: Arc<ServerConfig>) {
             }
         };
 
-        let server_config = server_config.clone();
+        //let server_config = server_config.clone();
         let tls_acceptor = tls_acceptor.clone();
         let service_stack = service_stack.clone();
 
@@ -202,7 +198,7 @@ async fn start_single_server(server_config: Arc<ServerConfig>) {
             handle_connection(
                 stream,
                 peer_addr,
-                server_config,
+                &server_config,
                 service_stack,
                 tls_acceptor,
             )
@@ -225,7 +221,7 @@ async fn start_single_server(server_config: Arc<ServerConfig>) {
 async fn handle_connection(
     stream: TcpStream,
     ip_addr: SocketAddr,
-    config: Arc<ServerConfig>,
+    config: &'static ServerConfig,
     service: TowerToHyperService<BoxedCloneService>,
     tls_acceptor: Arc<Option<Arc<TlsAcceptor>>>,
 ) {
@@ -277,7 +273,7 @@ async fn handle_connection(
 /// - `Ok(Some(TlsAcceptor))` if TLS enabled and configured correctly
 /// - `Ok(None)` if TLS is not enabled
 /// - `Err(_)` if configuration error (missing certs, invalid config)
-fn build_tls_acceptor(config: &ServerConfig) -> Result<Option<TlsAcceptor>, anyhow::Error> {
+fn build_tls_acceptor(config: &'static ServerConfig) -> Result<Option<TlsAcceptor>, anyhow::Error> {
     if !config.use_tls() {
         return Ok(None);
     }
@@ -327,7 +323,7 @@ pub fn setup_tls(
 /// - `config`: Server config (defines middleware, allowed paths, etc)
 ///   Returns:
 /// - Ok(BoxedCloneService) or error (if layer fails to build)
-fn build_service_stack(config: &ServerConfig) -> Result<BoxedCloneService, Error> {
+fn build_service_stack(config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
     let layers = config.build_middleware_layers()?;
     let compiled_routes = config.compiled_allowed_pathes.clone().unwrap();
 
@@ -366,7 +362,7 @@ fn build_service_stack(config: &ServerConfig) -> Result<BoxedCloneService, Error
 fn apply_layers(
     service: BoxedCloneService,
     layers: Vec<MiddlewareLayer>,
-    server_name: &str,
+    server_name: &'static str,
     compiled_routes: Arc<CompiledAllowedPathes>,
 ) -> BoxedCloneService {
     // Fold all layers in order, wrapping service at each step
@@ -381,6 +377,7 @@ fn apply_layers(
         }
 
         MiddlewareLayer::Logger => {
+            //let _x=LoggerLayer::new(server_name).layer(svc).get_s();
             trace!("{}: Logger middleware enabled", server_name);
             LoggerLayer::new(server_name).layer(svc).boxed_clone()
         }

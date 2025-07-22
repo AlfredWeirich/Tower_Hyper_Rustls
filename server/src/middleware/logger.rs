@@ -2,7 +2,6 @@ use std::{
     fmt::Debug,
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -14,14 +13,14 @@ use tower::{Layer, Service};
 /// A Tower Layer that wraps a service with logging functionality, tagged with a server name.
 #[derive(Clone)]
 pub struct LoggerLayer {
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl LoggerLayer {
     /// Create a new LoggerLayer with a name for the service/server.
-    pub fn new(server_name: impl Into<String>) -> Self {
+    pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -32,7 +31,7 @@ impl<S> Layer<S> for LoggerLayer {
     fn layer(&self, inner: S) -> Self::Service {
         LoggerService {
             inner,
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }
@@ -41,15 +40,27 @@ impl<S> Layer<S> for LoggerLayer {
 #[derive(Clone)]
 pub struct LoggerService<S> {
     inner: S,
-    server_name: Arc<String>,
+    server_name: &'static str,
+}
+
+impl<S> LoggerService<S> {
+    pub fn get_s<ReqBody>(self) -> impl Service<Request<ReqBody>>
+    where
+        S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
+        S::Future: Send + 'static,
+        S::Error: Debug + Send + 'static,
+        ReqBody: Send + 'static,
+    {
+        self
+    }
 }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for LoggerService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
-    ReqBody: Send + 'static,
     S::Error: Debug + Send + 'static,
+    ReqBody: Send + 'static,
 {
     type Response = Response<ServiceRespBody>;
     type Error = S::Error;
@@ -60,7 +71,7 @@ where
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
         tracing::info!(
             "{}: --> Request: {} {}",
             server_name,

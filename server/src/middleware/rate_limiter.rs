@@ -27,14 +27,14 @@ use server::SrvError; // BoxBody<Bytes, SrvError>
 #[derive(Clone)]
 pub struct SimpleRateLimiterLayer {
     limit_duration: Duration,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl SimpleRateLimiterLayer {
-    pub fn new(per: Duration, server_name: impl Into<String>) -> Self {
+    pub fn new(per: Duration, server_name: &'static str) -> Self {
         Self {
             limit_duration: per,
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -42,7 +42,7 @@ impl SimpleRateLimiterLayer {
 impl<S> Layer<S> for SimpleRateLimiterLayer {
     type Service = SimpleRateLimiterService<S>;
     fn layer(&self, inner: S) -> Self::Service {
-        SimpleRateLimiterService::new(inner, self.limit_duration, Arc::clone(&self.server_name))
+        SimpleRateLimiterService::new(inner, self.limit_duration, self.server_name)
     }
 }
 
@@ -51,7 +51,7 @@ pub struct SimpleRateLimiterService<S> {
     inner: S,
     state: Arc<Mutex<RateLimitState>>,
     limit_duration: Duration,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 #[derive(Debug)]
@@ -60,7 +60,7 @@ struct RateLimitState {
 }
 
 impl<S> SimpleRateLimiterService<S> {
-    pub fn new(inner: S, per: Duration, server_name: Arc<String>) -> Self {
+    pub fn new(inner: S, per: Duration, server_name: &'static str) -> Self {
         trace!(
             "{}: Creating SimpleRateLimiterService with limit duration: {:?}",
             server_name, per
@@ -94,7 +94,7 @@ where
         let mut inner = self.inner.clone();
         let state = self.state.clone();
         let delay = self.limit_duration;
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
 
         Box::pin(async move {
             let mut state = state.lock().await;
@@ -129,7 +129,7 @@ pub struct TokenBucketRateLimiterLayer {
     capacity: usize,
     refill_tokens: usize,
     interval: Duration,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl TokenBucketRateLimiterLayer {
@@ -137,13 +137,13 @@ impl TokenBucketRateLimiterLayer {
         capacity: usize,
         refill_tokens: usize,
         interval: Duration,
-        server_name: impl Into<String>,
+        server_name: &'static str,
     ) -> Self {
         Self {
             capacity,
             refill_tokens,
             interval,
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -156,7 +156,7 @@ impl<S> Layer<S> for TokenBucketRateLimiterLayer {
             self.capacity,
             self.refill_tokens,
             self.interval,
-            Arc::clone(&self.server_name),
+            self.server_name,
         )
     }
 }
@@ -198,7 +198,7 @@ pub struct TokenBucketRateLimiterService<S> {
     capacity: usize,
     refill_tokens: usize,
     interval: Duration,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl<S> TokenBucketRateLimiterService<S> {
@@ -207,7 +207,7 @@ impl<S> TokenBucketRateLimiterService<S> {
         capacity: usize,
         refill_tokens: usize,
         interval: Duration,
-        server_name: Arc<String>,
+        server_name: &'static str,
     ) -> Self {
         let state = Arc::new(Mutex::new(TokenBucket {
             tokens: capacity,
@@ -245,7 +245,7 @@ where
         let capacity = self.capacity;
         let refill_tokens = self.refill_tokens;
         let interval = self.interval;
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
 
         Box::pin(async move {
             let mut bucket = state.lock().await;

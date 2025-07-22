@@ -10,8 +10,8 @@ use rustls_pki_types::{CertificateRevocationListDer, pem::PemObject};
 use crate::ClientCertConfig;
 use crate::configuration::ServerCertConfig;
 
-use common::{load_certs, load_single_key};
 use anyhow::Error;
+use common::{load_certs, load_single_key};
 
 /// Builds and returns a Rustls `ServerConfig` with mutual TLS (mTLS) support.
 ///
@@ -70,7 +70,7 @@ pub fn tls_config(
         })?;
 
         // Collect Certificate Revocation Lists (CRLs) if specified in client CA configs
-        let mut crls: Vec<CertificateRevocationListDer<'_>> = Vec::new();
+        let mut crls: Vec<CertificateRevocationListDer<'_>> = Vec::with_capacity(20);
         for config in client_certs {
             // Load one or more CA certs for this config
             let ca_certs = load_certs(&config.ssl_client_ca, server_name);

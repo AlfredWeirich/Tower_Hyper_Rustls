@@ -311,7 +311,7 @@ pub enum RateLimiterType {
 
 impl Layers {
     pub fn build_middleware_layers(&self) -> Result<Vec<MiddlewareLayer>, Error> {
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(20);
         for layer in &self.enabled {
             match layer {
                 LayerSpec::Timing => result.push(MiddlewareLayer::Timing),
@@ -453,7 +453,7 @@ impl CompiledAllowedPathes {
 //    Config Loader
 // ===================
 
-pub fn get_configuration(config_file: &str) -> Result<Config, Error> {
+pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
     let toml_str = fs::read_to_string(config_file)?;
     let mut config: Config = toml::from_str(&toml_str)?;
 
@@ -519,5 +519,21 @@ pub fn get_configuration(config_file: &str) -> Result<Config, Error> {
         }
     }
 
-    Ok(config)
+    config.set_static_config();
+    // let x=Config::get_static_config();
+    // let z=&x.servers[0];
+    // let u:&'static str=&z.name.as_ref();
+    Ok(Config::get_static_config())
+}
+static mut STAT_CONFIG: *const Config = std::ptr::null();
+impl Config {
+    fn set_static_config(self) {
+        unsafe {
+            STAT_CONFIG = &self as *const Config;
+        }
+    }
+
+    fn get_static_config() -> &'static Config {
+        unsafe { &*STAT_CONFIG }
+    }
 }

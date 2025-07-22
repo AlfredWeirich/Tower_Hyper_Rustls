@@ -19,15 +19,15 @@ use server::SrvError;
 #[derive(Clone)]
 pub struct InspectionLayer {
     rules: Arc<CompiledAllowedPathes>,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl InspectionLayer {
     /// Create a new InspectionLayer with rules and a server name.
-    pub fn new(rules: CompiledAllowedPathes, server_name: impl Into<String>) -> Self {
+    pub fn new(rules: CompiledAllowedPathes, server_name: &'static str) -> Self {
         Self {
             rules: Arc::new(rules),
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -39,7 +39,7 @@ impl<S> Layer<S> for InspectionLayer {
         InspectionService {
             inner,
             allowed_pathes: self.rules.clone(),
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }
@@ -48,7 +48,7 @@ impl<S> Layer<S> for InspectionLayer {
 pub struct InspectionService<S> {
     inner: S,
     allowed_pathes: Arc<CompiledAllowedPathes>,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 use server::ServiceRespBody;
@@ -74,7 +74,7 @@ where
         let path = uri.path().to_string();
         let query = uri.query().unwrap_or("").to_string();
         let allow = self.allowed_pathes.is_allowed(&method, &path, &query);
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
 
         if allow {
             // If the request matches one of the allowed regex patterns

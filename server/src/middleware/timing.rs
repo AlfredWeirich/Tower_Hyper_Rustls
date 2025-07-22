@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::Instant,
 };
@@ -14,13 +13,13 @@ use server::ServiceRespBody;
 /// A Tower `Layer` that wraps a service with timing functionality and a server name.
 #[derive(Clone)]
 pub struct TimingLayer {
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl TimingLayer {
-    pub fn new(server_name: impl Into<String>) -> Self {
+    pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -31,7 +30,7 @@ impl<S> Layer<S> for TimingLayer {
     fn layer(&self, inner: S) -> Self::Service {
         TimingMiddleware {
             inner,
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }
@@ -40,7 +39,7 @@ impl<S> Layer<S> for TimingLayer {
 #[derive(Clone)]
 pub struct TimingMiddleware<S> {
     inner: S,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 // impl<S> TimingMiddleware<S> {
@@ -68,7 +67,7 @@ where
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let mut inner = self.inner.clone();
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
         let start = Instant::now();
 
         Box::pin(async move {

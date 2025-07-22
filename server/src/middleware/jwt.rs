@@ -27,17 +27,17 @@ use common::{Claims, load_decoding_keys, verify_jwt};
 #[derive(Clone)]
 pub struct JwtAuthLayer {
     decoding_keys: Arc<Vec<DecodingKey>>,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl JwtAuthLayer {
     #[allow(dead_code)]
-    pub fn new(key_files: Vec<String>, server_name: impl Into<String>) -> Self {
+    pub fn new(key_files: Vec<String>, server_name: &'static str) -> Self {
         let decoding_keys = load_decoding_keys(&key_files);
 
         Self {
             decoding_keys: Arc::new(decoding_keys),
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -49,7 +49,7 @@ impl<S> Layer<S> for JwtAuthLayer {
         JwtAuthService {
             inner,
             decoding_keys: self.decoding_keys.clone(),
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }
@@ -58,7 +58,7 @@ impl<S> Layer<S> for JwtAuthLayer {
 pub struct JwtAuthService<S> {
     inner: S,
     decoding_keys: Arc<Vec<DecodingKey>>,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for JwtAuthService<S>
@@ -78,7 +78,7 @@ where
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let mut inner = self.inner.clone();
         let decoding_keys = self.decoding_keys.clone();
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
 
         Box::pin(async move {
             // extract the token string from the request's Authorization header

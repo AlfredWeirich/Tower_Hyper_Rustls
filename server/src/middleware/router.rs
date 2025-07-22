@@ -17,6 +17,8 @@ use server::ServiceRespBody;
 use server::SrvError;
 
 use crate::configuration::ServerConfig;
+use common::build_root_store;
+use common::build_tls_client_config;
 
 /// The `RouterService` is a Tower-compatible HTTP service that performs
 /// prefix-based routing of incoming requests to different backend URIs.
@@ -32,7 +34,7 @@ pub struct RouterService {
     /// Vector of routing rules: (path prefix, backend URI), sorted by prefix length (longest first).
     rules: Arc<Vec<(String, Uri)>>, // (prefix, backend_uri)
     /// The server name (for logging and diagnostics).
-    config: ServerConfig,
+    config: &'static ServerConfig,
     jwt_token: Option<String>,
 }
 
@@ -47,9 +49,9 @@ impl RouterService {
     /// # Returns
     ///
     /// Returns a fully initialized RouterService.
-    pub fn new(config: &ServerConfig) -> Self {
+    pub fn new(config: &'static ServerConfig) -> Self {
         let routes = config.rev_routes.clone();
-        let server_name = config.name.to_string();
+        let server_name = &config.name;
 
         let router_params = config.router_params.as_ref();
         trace!("Router params: {:#?}", router_params);
@@ -75,8 +77,6 @@ impl RouterService {
         // Ensure longest prefixes are checked first for correct routing.
         rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
 
-        use common::build_root_store;
-        use common::build_tls_client_config;
         let client: Client<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
             ServiceRespBody,
@@ -128,33 +128,18 @@ impl RouterService {
             }
         };
 
-        // // Build HTTPS connector with native root certificates.
-        // let https = hyper_rustls::HttpsConnectorBuilder::new()
-        //     .with_native_roots()
-        //     .expect("no native root CA certificates found")
-        //     .https_or_http()
-        //     .enable_http1()
-        //     .build();
-
-        // // Construct a Hyper client with the HTTPS connector.
-        // let client: Client<
-        //     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-        //     ServiceRespBody,
-        // > = Client::builder(TokioExecutor::new()).build(https);
-
         let jwt_token = config.router_params.clone().unwrap().jwt;
-
-        // {
-
-        //     config.router_params.unwrap().jwt.unwrap().
-        // }
 
         RouterService {
             client,
             rules: Arc::new(rules_vec),
-            config: config.clone(),
+            config: config,
             jwt_token,
         }
+    }
+
+    pub fn get_s(self) -> impl Service<Request<Incoming>> {
+        self
     }
 }
 

@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -12,14 +11,14 @@ use tower::{Layer, Service};
 #[derive(Clone)]
 pub struct DelayLayer {
     delay: Duration,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl DelayLayer {
-    pub fn new(delay: Duration, server_name: impl Into<String>) -> Self {
+    pub fn new(delay: Duration, server_name: &'static str) -> Self {
         Self {
             delay,
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
     }
 }
@@ -32,7 +31,7 @@ impl<S> Layer<S> for DelayLayer {
             inner,
             delay: self.delay,
             sleep: None,
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }
@@ -41,7 +40,7 @@ pub struct DelayService<S> {
     inner: S,
     delay: Duration,
     sleep: Option<Pin<Box<Sleep>>>,
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl<S: Clone> Clone for DelayService<S> {
@@ -50,7 +49,7 @@ impl<S: Clone> Clone for DelayService<S> {
             inner: self.inner.clone(),
             delay: self.delay,
             sleep: None, // Don't clone sleep state!
-            server_name: Arc::clone(&self.server_name),
+            server_name: self.server_name,
         }
     }
 }

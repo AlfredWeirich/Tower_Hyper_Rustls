@@ -14,15 +14,18 @@ use server::SrvError; // BoxBody<Bytes, SrvError>
 /// A simple Tower service that echoes responses, tagged by server_name.
 #[derive(Clone, Debug)]
 pub struct EchoService {
-    server_name: Arc<String>,
+    server_name: &'static str,
 }
 
 impl EchoService {
     /// Create a new EchoService with the given server name.
-    pub fn new(server_name: impl Into<String>) -> Self {
+    pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: Arc::new(server_name.into()),
+            server_name: server_name,
         }
+    }
+    pub fn get_s(self) -> impl Service<Request<Incoming>> {
+        self
     }
 }
 
@@ -39,7 +42,7 @@ impl Service<Request<Incoming>> for EchoService {
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
         // let method = req.method().clone();
         // let path = req.uri().path().to_string();
-        let server_name = Arc::clone(&self.server_name);
+        let server_name = self.server_name;
 
         Box::pin(async move {
             match (req.method(), req.uri().path()) {

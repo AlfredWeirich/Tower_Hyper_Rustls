@@ -325,7 +325,7 @@ pub fn setup_tls(
 /// - Ok(BoxedCloneService) or error (if layer fails to build)
 fn build_service_stack(config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
     let layers = config.build_middleware_layers()?;
-    let compiled_routes = config.compiled_allowed_pathes.clone().unwrap();
+    let compiled_routes = config.compiled_allowed_pathes.as_ref().unwrap();
 
     let service_name = config.service.as_str();
     let server_name = config.name.as_str();
@@ -342,7 +342,7 @@ fn build_service_stack(config: &'static ServerConfig) -> Result<BoxedCloneServic
         base_service,
         layers,
         server_name,
-        Arc::new(compiled_routes),
+        compiled_routes,
     ))
 }
 
@@ -363,7 +363,7 @@ fn apply_layers(
     service: BoxedCloneService,
     layers: Vec<MiddlewareLayer>,
     server_name: &'static str,
-    compiled_routes: Arc<CompiledAllowedPathes>,
+    compiled_routes: &'static CompiledAllowedPathes,
 ) -> BoxedCloneService {
     // Fold all layers in order, wrapping service at each step
     layers.into_iter().fold(service, |svc, layer| match layer {
@@ -413,7 +413,7 @@ fn apply_layers(
         }
         MiddlewareLayer::Inspection => {
             trace!("{}: Inspection middleware enabled", server_name);
-            InspectionLayer::new((*compiled_routes).clone(), server_name)
+            InspectionLayer::new(compiled_routes, server_name)
                 .layer(svc)
                 .boxed_clone()
         }

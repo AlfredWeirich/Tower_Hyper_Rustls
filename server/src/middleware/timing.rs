@@ -42,15 +42,6 @@ pub struct TimingMiddleware<S> {
     server_name: &'static str,
 }
 
-// impl<S> TimingMiddleware<S> {
-//     pub fn new(inner: S, server_name: impl Into<String>) -> Self {
-//         Self {
-//             inner,
-//             server_name: Arc::new(server_name.into()),
-//         }
-//     }
-// }
-
 impl<S, ReqBody> Service<Request<ReqBody>> for TimingMiddleware<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,

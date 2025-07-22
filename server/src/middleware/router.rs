@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -32,7 +31,7 @@ pub struct RouterService {
         ServiceRespBody,
     >,
     /// Vector of routing rules: (path prefix, backend URI), sorted by prefix length (longest first).
-    rules: Arc<Vec<(String, Uri)>>, // (prefix, backend_uri)
+    rules: &'static Vec<(String, Uri)>, // (prefix, backend_uri)
     /// The server name (for logging and diagnostics).
     config: &'static ServerConfig,
     jwt_token: Option<String>,
@@ -50,32 +49,12 @@ impl RouterService {
     ///
     /// Returns a fully initialized RouterService.
     pub fn new(config: &'static ServerConfig) -> Self {
-        let routes = config.rev_routes.clone();
-        let server_name = &config.name;
-
-        let router_params = config.router_params.as_ref();
-        trace!("Router params: {:#?}", router_params);
+     
         let router_params = config.router_params.as_ref().unwrap();
+        trace!("Router params: {:#?}", router_params);
         let proto = router_params.protocol.as_deref().unwrap();
 
-        let mut rules_vec: Vec<_> = match routes {
-            Some(map) => map
-                .into_iter()
-                .filter_map(|(prefix, host_port)| {
-                    let full_uri = format!("{proto}://{host_port}");
-                    match full_uri.parse::<Uri>() {
-                        Ok(uri) => Some((prefix, uri)),
-                        Err(e) => {
-                            tracing::warn!("{server_name}: Invalid URI ({}): {}", full_uri, e);
-                            None
-                        }
-                    }
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        // Ensure longest prefixes are checked first for correct routing.
-        rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
+        let rules_vec = &config.parsed_routes;
 
         let client: Client<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -132,15 +111,13 @@ impl RouterService {
 
         RouterService {
             client,
-            rules: Arc::new(rules_vec),
+            rules: rules_vec,
             config: config,
             jwt_token,
         }
     }
 
-    pub fn get_s(self) -> impl Service<Request<Incoming>> {
-        self
-    }
+
 }
 
 impl Service<Request<Incoming>> for RouterService {
@@ -169,7 +146,7 @@ impl Service<Request<Incoming>> for RouterService {
     /// or an error response if no routing rule matches.
     fn call(&mut self, request: Request<Incoming>) -> Self::Future {
         //trace!("call im router");
-        let rules = Arc::clone(&self.rules);
+        let rules = self.rules;
         let client = self.client.clone();
         let server_name = self.config.name.clone();
         let jwt_token = self.jwt_token.clone();

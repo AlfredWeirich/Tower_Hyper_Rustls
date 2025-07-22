@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
+use hyper::Uri;
 
 // ===================
 //    Root Config
@@ -75,6 +76,9 @@ pub struct ServerConfig {
 
     #[serde(rename = "RouterParams")]
     pub router_params: Option<RouterParams>,
+
+    #[serde(skip)]
+    pub parsed_routes: Vec<(String, Uri)>,
 
     #[serde(skip)]
     pub compiled_allowed_pathes: Option<CompiledAllowedPathes>,
@@ -221,6 +225,56 @@ impl ServerConfig {
                 }
             }
         }
+    }
+    /// Validates and normalizes router-related parameters for servers using the "Router" service.
+    pub fn validate_and_normalize_router(&mut self) -> Result<(), Error> {
+        if self.service.eq_ignore_ascii_case("Router") {
+            let params = self.router_params.as_ref().ok_or_else(|| {
+                Error::msg(format!(
+                    "Server '{}' uses service = 'Router' but [RouterParams] is missing",
+                    self.name
+                ))
+            })?;
+
+            params.validate(&self.name)?;
+            self.normalize_router_protocol();
+        }
+        Ok(())
+    }
+    pub fn init_parsed_routes(&mut self) -> Result<(), Error> {
+        let mut rules_vec = match &self.rev_routes {
+            Some(map) => {
+                let proto = self
+                    .router_params
+                    .as_ref()
+                    .and_then(|p| p.protocol.as_deref())
+                    .unwrap_or("http");
+
+                map.iter()
+                    .filter_map(|(prefix, host_port)| {
+                        let full_uri = format!("{proto}://{host_port}");
+                        match full_uri.parse::<Uri>() {
+                            Ok(uri) => Some((prefix.clone(), uri)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "{}: Invalid URI ({}): {}",
+                                    self.name,
+                                    full_uri,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }
+            None => Vec::new(),
+        };
+
+        // Sort by longest prefix first
+        rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
+        self.parsed_routes = rules_vec;
+        Ok(())
     }
 }
 
@@ -460,21 +514,11 @@ pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
     // do some checks on parameters for each of the servers
     for server in config.servers.iter_mut() {
         // if service layer is router, we need router_params
-        if server.service.eq_ignore_ascii_case("Router") {
-            let params = server.router_params.as_ref().ok_or_else(|| {
-                Error::msg(format!(
-                    "Server '{}' uses service = 'Router' but [RouterParams] is missing",
-                    server.name
-                ))
-            })?;
-
-            params.validate(&server.name)?;
-        }
-        // set default for router client protokoll
-        server.normalize_router_protocol();
-
+        server.validate_and_normalize_router()?;
         // for the inspection layer: the allowed pathes regex must be pre-compiled
         server.init_compiled_allowed_pathes()?;
+        server.init_parsed_routes()?;
+        
 
         // in case of TLS, we need server certificates
         if server.use_tls() && server.server_certs.is_none() {
@@ -525,6 +569,8 @@ pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
     // let u:&'static str=&z.name.as_ref();
     Ok(Config::get_static_config())
 }
+
+
 static mut STAT_CONFIG: *const Config = std::ptr::null();
 impl Config {
     fn set_static_config(self) {

@@ -6,7 +6,6 @@ use hyper::{Request, Response, StatusCode};
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tower::{Layer, Service};
@@ -18,15 +17,15 @@ use server::SrvError;
 
 #[derive(Clone)]
 pub struct InspectionLayer {
-    rules: Arc<CompiledAllowedPathes>,
+    rules: &'static CompiledAllowedPathes,
     server_name: &'static str,
 }
 
 impl InspectionLayer {
     /// Create a new InspectionLayer with rules and a server name.
-    pub fn new(rules: CompiledAllowedPathes, server_name: &'static str) -> Self {
+    pub fn new(rules: &'static CompiledAllowedPathes, server_name: &'static str) -> Self {
         Self {
-            rules: Arc::new(rules),
+            rules: rules,
             server_name: server_name,
         }
     }
@@ -38,7 +37,7 @@ impl<S> Layer<S> for InspectionLayer {
     fn layer(&self, inner: S) -> Self::Service {
         InspectionService {
             inner,
-            allowed_pathes: self.rules.clone(),
+            allowed_pathes: self.rules,
             server_name: self.server_name,
         }
     }
@@ -47,7 +46,7 @@ impl<S> Layer<S> for InspectionLayer {
 #[derive(Clone)]
 pub struct InspectionService<S> {
     inner: S,
-    allowed_pathes: Arc<CompiledAllowedPathes>,
+    allowed_pathes: &'static CompiledAllowedPathes,
     server_name: &'static str,
 }
 

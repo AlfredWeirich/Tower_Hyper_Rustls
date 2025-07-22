@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -24,9 +23,7 @@ impl EchoService {
             server_name: server_name,
         }
     }
-    pub fn get_s(self) -> impl Service<Request<Incoming>> {
-        self
-    }
+
 }
 
 impl Service<Request<Incoming>> for EchoService {

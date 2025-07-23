@@ -43,17 +43,17 @@ pub struct LoggerService<S> {
     server_name: &'static str,
 }
 
-impl<S> LoggerService<S> {
-    pub fn get_s<ReqBody>(self) -> impl Service<Request<ReqBody>>
-    where
-        S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
-        S::Future: Send + 'static,
-        S::Error: Debug + Send + 'static,
-        ReqBody: Send + 'static,
-    {
-        self
-    }
-}
+// impl<S> LoggerService<S> {
+//     pub fn get_s<ReqBody>(self) -> impl Service<Request<ReqBody>, Response = Response<ServiceRespBody>>+ Clone + Send + 'static
+//     where
+//         S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
+//         S::Future: Send + 'static,
+//         S::Error: Debug + Send + 'static,
+//         ReqBody: Send + 'static,
+//     {
+//         self
+//     }
+// }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for LoggerService<S>
 where

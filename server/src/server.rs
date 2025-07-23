@@ -67,7 +67,7 @@ use server::BoxedHyperService;
 /// curl -v --http1.1 --cert client.cert.pem --key client.key.pem https://www.aweirich.eu:443/help
 /// curl -v --http1.1 --cert client.cert.pem --key client.key.pem http://www.aweirich.eu:443/help
 /// curl -v https://www.aweirich.eu:1337   -H "Authorization: Bearer $(cat ./jwt/token1.jwt)"
-/// wrk -t8 -c128 -d10s  https://192.168.178.31:1337
+/// wrk -t16 -c256 -d30s  https://192.168.178.26:1337
 fn main() -> Result<(), anyhow::Error> {
     // Read config file path from the first CLI argument or use a default.
     let arg = std::env::args()
@@ -324,7 +324,7 @@ pub fn setup_tls(
 ///   Returns:
 /// - Ok(BoxedCloneService) or error (if layer fails to build)
 fn build_service_stack(config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
-    let layers = config.build_middleware_layers()?;
+    let layers = config.layers.build_middleware_layers()?;
     let compiled_routes = config.compiled_allowed_pathes.as_ref().unwrap();
 
     let service_name = config.service.as_str();

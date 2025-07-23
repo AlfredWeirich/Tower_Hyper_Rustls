@@ -3,7 +3,9 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
+    fmt::Debug
 };
+
 
 use hyper::{Request, Response};
 use tower::{Layer, Service};
@@ -42,10 +44,23 @@ pub struct TimingMiddleware<S> {
     server_name: &'static str,
 }
 
+// impl<S> TimingMiddleware<S> {
+//     pub fn get_s<ReqBody>(self) -> impl Service<Request<ReqBody>, Response = Response<ServiceRespBody>>+ Clone + Send + 'static
+//     where
+//         S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
+//         S::Future: Send + 'static,
+//         S::Error: Debug + Send + 'static,
+//         ReqBody: Send + 'static,
+//     {
+//         self
+//     }
+// }
+
 impl<S, ReqBody> Service<Request<ReqBody>> for TimingMiddleware<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
+    S::Error: Debug + Send + 'static,
     ReqBody: Send + 'static,
 {
     type Response = Response<ServiceRespBody>;

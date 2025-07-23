@@ -26,9 +26,9 @@ tokio_threads=64
 
                 # ip and port the server is listening
                 # HOME
-                #ip = "192.168.178.26"
+                # ip = "192.168.178.26"
                 # HH
-                #ip="192.168.178.31"
+                # ip="192.168.178.31"
                 ip="local"
                 port = 1337
 
@@ -36,8 +36,8 @@ tokio_threads=64
                 enabled=true
 
 
-                # Protocol can be HTTP or HTTPS
-                protocol = "HTTPS"
+                # Protocol can be http or https
+                protocol = "https"
 
                 # authentication method, can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
                 # authentication = "ClientCert"
@@ -49,9 +49,9 @@ tokio_threads=64
 
                 # the layers configured/enabled for this server
                 [Server.Layers]
-                enabled = ["Counter", "Logger", "Timing", "Inspection"]
+                # enabled = ["Counter", "Logger", "Timing", "Inspection"]
                 #enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
-                #enabled = []
+                enabled = []
 
                 # 
                 # Path to Server certificates in case of HTTPS
@@ -94,6 +94,7 @@ tokio_threads=64
                 # the reverse routes for the Router Service
                 [Server.ReverseRoutes]
                 "/help" = "192.168.178.26:1338"
+                "/" = "192.168.178.26:1338"
                 "/static" = "192.168.178.31:1339"
                 "/api" = "192.168.178.31:1330"
 
@@ -176,7 +177,7 @@ tokio_threads=64
             # HH
             #ip="192.168.178.31"
             port = 1338
-            protocol = "HTTP"
+            protocol = "http"
             service = "Echo"
             enabled=true
 
@@ -186,7 +187,7 @@ tokio_threads=64
             ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
 
             [Server.Layers]
-            enabled = ["Logger","Timing"]
+            enabled = []
 
             [Server.Layers.Delay]
             delay_micros = 250

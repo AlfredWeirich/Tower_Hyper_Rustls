@@ -574,10 +574,12 @@ pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
 static mut STAT_CONFIG: *const Config = std::ptr::null();
 impl Config {
     fn set_static_config(self) {
-        unsafe {
-            STAT_CONFIG = &self as *const Config;
-        }
+    let boxed = Box::new(self);
+    let leaked: &'static Config = Box::leak(boxed);
+    unsafe {
+        STAT_CONFIG = leaked as *const Config;
     }
+}
 
     fn get_static_config() -> &'static Config {
         unsafe { &*STAT_CONFIG }

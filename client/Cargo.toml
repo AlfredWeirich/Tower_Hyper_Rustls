@@ -20,4 +20,3 @@ clap = { version = "4.5.40", features = ["derive"] }
 [[bin]]
 name = "client"
 path = "src/mtls_client.rs"
-

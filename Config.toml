@@ -51,7 +51,8 @@ tokio_threads=64
                 [Server.Layers]
                 # enabled = ["Counter", "Logger", "Timing", "Inspection"]
                 #enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
-                enabled = []
+                enabled = ["ConcurrencyLimit"]
+                #enabled = []
 
                 # 
                 # Path to Server certificates in case of HTTPS
@@ -85,6 +86,13 @@ tokio_threads=64
                 #
                         [Server.Layers.JWT]
                         jwt_public_keys=["./jwt/public_key.pem"]
+
+                #
+                # The Concorrency Layer
+                # parameter is number of max. concurrency requests
+                #
+                [Server.Layers.ConcurrencyLimit]
+                max_concurrent_requests = 10
 
         ############################################################################
         #

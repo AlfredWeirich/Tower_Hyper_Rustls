@@ -1,13 +1,13 @@
 // configuration.rs
 
 use anyhow::Error;
+use hyper::Uri;
 use local_ip_address::local_ip;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
-use hyper::Uri;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -144,6 +144,13 @@ pub struct Layers {
 
     #[serde(rename = "JWT")]
     pub jwt_config: Option<JwtAuthConfig>,
+
+    #[serde(rename = "ConcurrencyLimit")]
+    pub concurrency_limit_config: Option<ConcurrencyLimitConfig>,
+}
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConcurrencyLimitConfig {
+    pub max_concurrent_requests: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -257,7 +264,13 @@ impl ServerConfig {
                 )));
             }
 
-            match params.authentication.as_deref().unwrap_or("").to_lowercase().as_str() {
+            match params
+                .authentication
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str()
+            {
                 "" => {}
                 "jwt" => {
                     if protocol != "https" {
@@ -315,12 +328,7 @@ impl ServerConfig {
                         match full_uri.parse::<Uri>() {
                             Ok(uri) => Some((prefix.clone(), uri)),
                             Err(e) => {
-                                tracing::warn!(
-                                    "{}: Invalid URI ({}): {}",
-                                    self.name,
-                                    full_uri,
-                                    e
-                                );
+                                tracing::warn!("{}: Invalid URI ({}): {}", self.name, full_uri, e);
                                 None
                             }
                         }
@@ -365,11 +373,9 @@ impl ServerConfig {
                     )));
                 }
 
-                let jwt_enabled = self
-                    .layers
-                    .enabled
-                    .iter()
-                    .any(|layer| layer.eq_ignore_ascii_case("JwtAuth") || layer.eq_ignore_ascii_case("JWT"));
+                let jwt_enabled = self.layers.enabled.iter().any(|layer| {
+                    layer.eq_ignore_ascii_case("JwtAuth") || layer.eq_ignore_ascii_case("JWT")
+                });
 
                 if !jwt_enabled {
                     return Err(Error::msg(format!(
@@ -476,6 +482,7 @@ pub enum MiddlewareLayer {
     Delay(DelayConfig),
     Inspection,
     JwtAuth(Vec<String>),
+    ConcurrencyLimit(ConcurrencyLimitConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -499,21 +506,41 @@ impl Layers {
                 "Counter" => result.push(MiddlewareLayer::Counter),
                 "Logger" => result.push(MiddlewareLayer::Logger),
                 "Delay" => {
-                    let cfg = self.delay_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.Delay]"))?;
+                    let cfg = self
+                        .delay_config
+                        .as_ref()
+                        .ok_or_else(|| Error::msg("Missing [Layers.Delay]"))?;
                     result.push(MiddlewareLayer::Delay(cfg.clone()));
                 }
                 "Inspection" => result.push(MiddlewareLayer::Inspection),
                 "JwtAuth" | "JWT" => {
-                    let cfg = self.jwt_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.JWT]"))?;
+                    let cfg = self
+                        .jwt_config
+                        .as_ref()
+                        .ok_or_else(|| Error::msg("Missing [Layers.JWT]"))?;
                     result.push(MiddlewareLayer::JwtAuth(cfg.jwt_public_keys.clone()));
                 }
                 s if s == "RateLimiter:Simple" => {
-                    let cfg = self.rate_limiter_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.RateLimiter]"))?;
-                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::Simple(cfg.clone())));
+                    let cfg = self
+                        .rate_limiter_config
+                        .as_ref()
+                        .ok_or_else(|| Error::msg("Missing [Layers.RateLimiter]"))?;
+                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::Simple(
+                        cfg.clone(),
+                    )));
                 }
                 s if s == "RateLimiter:TokenBucket" => {
-                    let cfg = self.token_bucket_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.TokenBucketRateLimiter]"))?;
-                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::TokenBucket(cfg.clone())));
+                    let cfg = self
+                        .token_bucket_config
+                        .as_ref()
+                        .ok_or_else(|| Error::msg("Missing [Layers.TokenBucketRateLimiter]"))?;
+                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::TokenBucket(
+                        cfg.clone(),
+                    )));
+                }
+                "ConcurrencyLimit" => {
+                    let cfg = self.concurrency_limit_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.ConcurrencyLimit]"))?;
+                    result.push(MiddlewareLayer::ConcurrencyLimit(cfg.clone()));
                 }
                 other => return Err(Error::msg(format!("Unknown layer type: {}", other))),
             }

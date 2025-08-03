@@ -21,8 +21,7 @@ use tokio::{
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 
 // === Tower (Middleware, Service) ===
-use tower::{Layer, ServiceExt};
-
+use tower::{Layer, ServiceExt,limit::ConcurrencyLimit};
 // === TLS/Rustls ===
 use tokio_rustls::TlsAcceptor;
 
@@ -83,8 +82,11 @@ fn main() -> Result<(), anyhow::Error> {
     let tokio_threads = config.tokio_threads.unwrap_or(num_cpus::get() * 2);
 
     // Set up structured tracing/logging (file or stdout, based on config).
-    // setup_tracing(config.log_dir.as_deref())?;
-    console_subscriber::init();
+
+    // normal tracing
+    setup_tracing(config.log_dir.as_deref())?;
+    // with tokio console
+    // console_subscriber::init();
     trace!("Configuration from: {}", arg);
     trace!("Servers Config: {:#?}", config);
 
@@ -419,6 +421,13 @@ fn apply_layers(
             InspectionLayer::new(compiled_routes, server_name)
                 .layer(svc)
                 .boxed_clone()
+        }
+
+        MiddlewareLayer::ConcurrencyLimit(cfg) => {
+            trace!("{}: Concurrency middleware enabled", server_name);
+            let concurrent = cfg.max_concurrent_requests;
+            let limited_service = ConcurrencyLimit::new(svc, concurrent).boxed_clone();
+            limited_service
         }
     })
 }

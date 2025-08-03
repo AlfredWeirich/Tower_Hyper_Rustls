@@ -1,11 +1,10 @@
 use std::{
+    fmt::Debug,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
-    fmt::Debug
 };
-
 
 use hyper::{Request, Response};
 use tower::{Layer, Service};

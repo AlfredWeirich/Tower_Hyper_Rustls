@@ -49,7 +49,6 @@ impl RouterService {
     ///
     /// Returns a fully initialized RouterService.
     pub fn new(config: &'static ServerConfig) -> Self {
-     
         let router_params = config.router_params.as_ref().unwrap();
         trace!("Router params: {:#?}", router_params);
         let proto = router_params.protocol.as_deref().unwrap();
@@ -116,8 +115,6 @@ impl RouterService {
             jwt_token,
         }
     }
-
-
 }
 
 impl Service<Request<Incoming>> for RouterService {
@@ -129,7 +126,7 @@ impl Service<Request<Incoming>> for RouterService {
     /// Always returns ready (this service is always ready).
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         //
-        trace!("poll_ready im router");
+        //trace!("poll_ready im router");
         Poll::Ready(Ok(()))
     }
 

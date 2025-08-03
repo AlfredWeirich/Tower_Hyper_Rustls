@@ -23,7 +23,6 @@ impl EchoService {
             server_name: server_name,
         }
     }
-
 }
 
 impl Service<Request<Incoming>> for EchoService {

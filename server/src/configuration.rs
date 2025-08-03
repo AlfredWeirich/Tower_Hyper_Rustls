@@ -539,7 +539,10 @@ impl Layers {
                     )));
                 }
                 "ConcurrencyLimit" => {
-                    let cfg = self.concurrency_limit_config.as_ref().ok_or_else(|| Error::msg("Missing [Layers.ConcurrencyLimit]"))?;
+                    let cfg = self
+                        .concurrency_limit_config
+                        .as_ref()
+                        .ok_or_else(|| Error::msg("Missing [Layers.ConcurrencyLimit]"))?;
                     result.push(MiddlewareLayer::ConcurrencyLimit(cfg.clone()));
                 }
                 other => return Err(Error::msg(format!("Unknown layer type: {}", other))),

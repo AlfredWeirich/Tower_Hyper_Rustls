@@ -81,7 +81,8 @@ fn main() -> Result<(), anyhow::Error> {
     let tokio_threads = config.tokio_threads.unwrap_or(num_cpus::get() * 2);
 
     // Set up structured tracing/logging (file or stdout, based on config).
-    setup_tracing(config.log_dir.as_deref())?;
+    // setup_tracing(config.log_dir.as_deref())?;
+    console_subscriber::init();
     trace!("Configuration from: {}", arg);
     trace!("Servers Config: {:#?}", config);
 

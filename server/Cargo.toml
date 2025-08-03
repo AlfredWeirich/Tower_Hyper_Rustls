@@ -7,7 +7,7 @@ edition = "2024"
 futures = "0.3.30"
 hyper = { version = "1.6.0", features = ["http1", "server", "http2", "client"] }
 rustls = "0.23.26"
-tokio = { version = "1.39.2", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.39.2", features = ["macros", "rt-multi-thread", "tracing"] }
 tokio-rustls = "0.26.2"
 tower = { version = "0.4.13", features = ["util", "make"] }
 hyper-util = { version = "0.1.11", features = ["tokio", "service", "client-legacy", "http1", "http2"] }
@@ -28,6 +28,7 @@ hyper-rustls = "0.27.7"
 rustls-pki-types = "1.12.0"
 num_cpus = "1.17.0"
 common = { path = "../common" }
+console-subscriber = "0.4.1"
 
 
 

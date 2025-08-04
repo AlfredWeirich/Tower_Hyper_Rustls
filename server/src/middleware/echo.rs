@@ -40,22 +40,26 @@ impl Service<Request<Incoming>> for EchoService {
         // let path = req.uri().path().to_string();
         let server_name = self.server_name;
 
+        
+
         Box::pin(async move {
             match (req.method(), req.uri().path()) {
                 (&hyper::Method::GET, "/") => {
                     tracing::info!("{}: GET /", server_name);
+                    let load_resp=load_test_echo().await;
                     #[cfg(feature = "boxed_body")]
                     let body: ServiceRespBody = Full::new(Bytes::from("Echo!"))
                         .map_err(SrvError::from)
                         .boxed();
                     #[cfg(not(feature = "boxed_body"))]
-                    let body: ServiceRespBody = Full::new(Bytes::from("Echo!"));
+                    // let body: ServiceRespBody = Full::new(Bytes::from("Echo: {load_resp}"));
+                    let body: ServiceRespBody = Full::new(Bytes::from(format!("Echo: {}", load_resp)));
                     let response = Response::new(body);
                     Ok(response)
                 }
                 (&hyper::Method::GET, "/help") => {
                     tracing::info!("{}: GET /help", server_name);
-                    let msg = format!("=====> This is the help page from {server_name}.\n");
+                    let msg = format!("=====> This is the help page from {server_name}\n");
                     #[cfg(feature = "boxed_body")]
                     let body: ServiceRespBody =
                         Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
@@ -101,4 +105,29 @@ impl Service<Request<Incoming>> for EchoService {
             }
         })
     }
+}
+
+use std::time::Duration;
+use tokio::time::sleep;
+
+pub async fn load_test_echo() -> String {
+    let mut data = vec![1.0f64; 32_000_000]; //256MB
+
+    // for i in 0..2 {
+    //     for val in data.iter_mut() {
+    //         *val = (*val + (i as f64).sin().cos().tan()).abs().sqrt();
+    //     }
+    // }
+    for i in 0..1 {
+        for val in data.iter_mut() {
+            *val = *val + (i as f64).sin().cos();
+        }
+    }
+
+    // Prevent optimization: sum is used and affects output
+    let checksum: f64 = data.iter().sum();
+
+    sleep(Duration::from_millis(1000)).await;
+
+    format!("Result checksum: {:.6}", checksum)
 }

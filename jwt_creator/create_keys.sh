@@ -4,13 +4,16 @@
 PRIVATE_KEY="private_key.pem"
 PUBLIC_KEY="public_key.pem"
 
-# Generate 2048-bit RSA private key
-openssl genpkey -algorithm RSA -out "$PRIVATE_KEY" -pkeyopt rsa_keygen_bits:2048
+# Generate Ed25519 private key
+openssl genpkey -algorithm ed25519 -out "$PRIVATE_KEY"
+
+# Set permissions for private key (owner read/write only)
+chmod 600 "$PRIVATE_KEY"
 
 # Extract public key from private key
-openssl rsa -pubout -in "$PRIVATE_KEY" -out "$PUBLIC_KEY"
+openssl pkey -in "$PRIVATE_KEY" -pubout -out "$PUBLIC_KEY"
 
-echo "Keys generated:"
+echo "Ed25519 keys generated:"
 echo "Private key: $PRIVATE_KEY"
 echo "Public key:  $PUBLIC_KEY"
 

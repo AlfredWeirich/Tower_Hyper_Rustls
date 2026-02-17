@@ -1,3 +1,21 @@
+//! # Rate Limiting Middleware
+//!
+//! This module provides two rate-limiting strategies, each implemented as a
+//! Tower Layer + Service pair:
+//!
+//! 1. **[`SimpleRateLimiterLayer`]** – A fixed-window limiter that enforces a
+//!    minimum duration between consecutive requests. Simple and deterministic.
+//! 2. **[`TokenBucketRateLimiterLayer`]** – A token-bucket limiter that allows
+//!    bursts up to a configured capacity while enforcing an average rate over
+//!    time. More flexible for real-world traffic patterns.
+//!
+//! Both limiters share state across all service clones via `Arc<Mutex<…>>`,
+//! so the limit is enforced server-wide (not per-connection).
+//!
+//! When a request is rate-limited, the service returns a **429 Too Many
+//! Requests** response immediately.
+
+// === Standard Library ===
 use std::{
     fmt::Debug,
     future::Future,
@@ -7,30 +25,47 @@ use std::{
     time::{Duration, Instant},
 };
 
+// === External Crates ===
 use bytes::Bytes;
-use http_body_util::Full;
-
-#[cfg(feature = "boxed_body")]
-use http_body_util::BodyExt;
-
+use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode};
 use tokio::sync::Mutex;
 use tower::{Layer, Service};
 use tracing::{info, trace, warn};
 
-use server::ServiceRespBody;
-#[cfg(feature = "boxed_body")]
-use server::SrvError; // BoxBody<Bytes, SrvError>
+// === Internal Modules ===
+use crate::{ServiceRespBody, SrvError};
 
-// ============ SIMPLE RATE LIMITER ============
+// ============================================================================
+//  SIMPLE RATE LIMITER
+// ============================================================================
 
+/// A simple fixed-window rate limiter layer.
+///
+/// This middleware enforces a minimum duration between consecutive requests.
+/// If a request arrives too soon after the previous one, it is rejected with a
+/// 429 Too Many Requests response.
+///
+/// ## Trade-offs
+///
+/// * **Pros**: Simple, deterministic, very low overhead.
+/// * **Cons**: Does not handle bursts well — even a brief spike will trigger
+///   rejections.
 #[derive(Clone)]
 pub struct SimpleRateLimiterLayer {
+    /// The minimum allowed interval between consecutive requests.
     limit_duration: Duration,
+    /// Server name label for tracing output.
     server_name: &'static str,
 }
 
 impl SimpleRateLimiterLayer {
+    /// Creates a new `SimpleRateLimiterLayer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `per`         – The minimum interval between requests.
+    /// * `server_name` – A `'static` label for log output.
     pub fn new(per: Duration, server_name: &'static str) -> Self {
         Self {
             limit_duration: per,
@@ -46,20 +81,31 @@ impl<S> Layer<S> for SimpleRateLimiterLayer {
     }
 }
 
+/// Service that enforces the simple fixed-window rate limit.
+///
+/// Shared state is protected by a Tokio [`Mutex`] (async-aware) so that
+/// checking + updating the timestamp is atomic from the async perspective.
 #[derive(Clone)]
 pub struct SimpleRateLimiterService<S> {
+    /// The inner (downstream) service.
     inner: S,
+    /// Shared mutable state tracking the next allowed request instant.
     state: Arc<Mutex<RateLimitState>>,
+    /// The minimum interval between requests.
     limit_duration: Duration,
+    /// Server name label for tracing.
     server_name: &'static str,
 }
 
+/// Internal state for the simple rate limiter.
 #[derive(Debug)]
 struct RateLimitState {
+    /// The earliest point in time at which the next request will be accepted.
     next_allowed: Instant,
 }
 
 impl<S> SimpleRateLimiterService<S> {
+    /// Creates a new `SimpleRateLimiterService` wrapping `inner`.
     pub fn new(inner: S, per: Duration, server_name: &'static str) -> Self {
         trace!(
             "{}: Creating SimpleRateLimiterService with limit duration: {:?}",
@@ -90,6 +136,12 @@ where
         self.inner.poll_ready(cx)
     }
 
+    /// Checks the shared state to determine if the request is within the
+    /// allowed interval. If not, returns 429 immediately.
+    ///
+    /// The lock is held only long enough to read/update `next_allowed` and
+    /// is explicitly dropped before calling the inner service, preventing
+    /// lock contention during downstream processing.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let mut inner = self.inner.clone();
         let state = self.state.clone();
@@ -102,17 +154,17 @@ where
 
             if now < state.next_allowed {
                 warn!("{}: Too Many Requests (simple limiter)", server_name);
-                #[cfg(feature = "boxed_body")]
+                // #[cfg(feature = "boxed_body")]
                 let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
                     .map_err(SrvError::from)
                     .boxed();
-                #[cfg(not(feature = "boxed_body"))]
-                let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"));
+
                 let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
                 return Ok(response);
             }
 
+            // Update the next allowed instant and drop the lock.
             state.next_allowed = now + delay;
             drop(state);
 
@@ -122,17 +174,47 @@ where
     }
 }
 
-// ============ TOKEN BUCKET RATE LIMITER ============
+// ============================================================================
+//  TOKEN BUCKET RATE LIMITER
+// ============================================================================
 
+/// A token bucket rate limiter layer.
+///
+/// This algorithm allows a certain number of "tokens" to be available for requests.
+/// Tokens are refilled at a fixed rate (`refill_tokens` every `interval`) up to a maximum `capacity`.
+/// Each incoming request consumes one token. If no tokens are available, the request is rejected.
+///
+/// This provides a more flexible rate limiting strategy than the simple fixed-window approach,
+/// as it can handle bursts of traffic up to the bucket's capacity, while still enforcing
+/// an average rate limit.
+///
+/// ## Example
+///
+/// With `capacity = 100`, `refill_tokens = 10`, and `interval = 1s`:
+/// * A burst of 100 requests will be accepted immediately.
+/// * After the burst, 10 new tokens become available every second.
+/// * Sustained throughput is capped at ~10 requests/second.
 #[derive(Clone)]
 pub struct TokenBucketRateLimiterLayer {
+    /// The maximum number of tokens the bucket can hold.
     capacity: usize,
+    /// The number of tokens to add to the bucket at each interval.
     refill_tokens: usize,
+    /// The duration after which `refill_tokens` are added.
     interval: Duration,
+    /// Server name label for tracing output.
     server_name: &'static str,
 }
 
 impl TokenBucketRateLimiterLayer {
+    /// Creates a new `TokenBucketRateLimiterLayer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - The maximum number of tokens the bucket can hold.
+    /// * `refill_tokens` - The number of tokens to add to the bucket at each interval.
+    /// * `interval` - The duration after which `refill_tokens` are added to the bucket.
+    /// * `server_name` - A static string identifier for the server, used in logging.
     pub fn new(
         capacity: usize,
         refill_tokens: usize,
@@ -161,18 +243,29 @@ impl<S> Layer<S> for TokenBucketRateLimiterLayer {
     }
 }
 
+/// Internal state for the token bucket.
+///
+/// Tracks the current token count and the last time tokens were refilled.
 #[derive(Debug)]
 struct TokenBucket {
+    /// Current number of available tokens (0 ≤ tokens ≤ capacity).
     tokens: usize,
+    /// Timestamp of the last refill. Used to calculate how many tokens
+    /// should be added since the last check.
     last_refill: Instant,
 }
 
 impl TokenBucket {
+    /// Refills the bucket based on elapsed time.
+    ///
+    /// Calculates the number of full intervals that have passed since
+    /// `last_refill` and adds the corresponding tokens, capped at `capacity`.
     fn refill(&mut self, capacity: usize, refill_tokens: usize, interval: Duration) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill);
 
         if elapsed >= interval {
+            // Use floating-point to handle partial intervals correctly.
             let intervals_passed = elapsed.as_secs_f64() / interval.as_secs_f64();
             let added_tokens = (intervals_passed * refill_tokens as f64).floor() as usize;
 
@@ -181,6 +274,10 @@ impl TokenBucket {
         }
     }
 
+    /// Attempts to consume a single token.
+    ///
+    /// Returns `true` if a token was available (and consumed), `false` if the
+    /// bucket is empty.
     fn try_consume(&mut self) -> bool {
         if self.tokens > 0 {
             self.tokens -= 1;
@@ -191,17 +288,30 @@ impl TokenBucket {
     }
 }
 
+/// Service that enforces the token-bucket rate limit.
+///
+/// All clones share the same [`TokenBucket`] via `Arc<Mutex<…>>`, ensuring
+/// the token count is consistent across connections.
 #[derive(Clone)]
 pub struct TokenBucketRateLimiterService<S> {
+    /// The inner (downstream) service.
     inner: S,
+    /// Shared mutable token bucket state.
     state: Arc<Mutex<TokenBucket>>,
+    /// Maximum token capacity (for refill capping).
     capacity: usize,
+    /// Tokens added per refill interval.
     refill_tokens: usize,
+    /// Duration between refills.
     interval: Duration,
+    /// Server name label for tracing.
     server_name: &'static str,
 }
 
 impl<S> TokenBucketRateLimiterService<S> {
+    /// Creates a new `TokenBucketRateLimiterService`.
+    ///
+    /// The bucket starts at full capacity.
     pub fn new(
         inner: S,
         capacity: usize,
@@ -239,6 +349,10 @@ where
         self.inner.poll_ready(cx)
     }
 
+    /// Refills the bucket, then attempts to consume a token.
+    ///
+    /// * **Token available** → drops the lock and forwards the request.
+    /// * **Bucket empty** → returns 429 immediately.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let mut inner = self.inner.clone();
         let state = self.state.clone();
@@ -256,6 +370,8 @@ where
                     "{}: Token consumed (bucket limiter). Remaining: {}",
                     server_name, bucket.tokens
                 );
+                // Drop the lock before calling the inner service to avoid
+                // holding it during potentially long-running downstream work.
                 drop(bucket);
                 inner.call(req).await
             } else {
@@ -263,23 +379,10 @@ where
                     "{}: Too Many Requests – no tokens available (bucket limiter).",
                     server_name
                 );
-                /*
-
-                #[cfg(feature = "boxed_body")]
-                let body:ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests")).map_err(SrvError::from).boxed();
-                #[cfg(not(feature = "boxed_body"))]
-                let body:ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"));
-                let mut response = Response::new(body);
-                *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-                return Ok(response);
-
-                 */
-                #[cfg(feature = "boxed_body")]
                 let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
                     .map_err(SrvError::from)
                     .boxed();
-                #[cfg(not(feature = "boxed_body"))]
-                let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"));
+
                 let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
                 Ok(response)

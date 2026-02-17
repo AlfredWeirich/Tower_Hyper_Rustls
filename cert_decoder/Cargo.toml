@@ -1,0 +1,9 @@
+[package]
+name = "cert_decoder"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+asn1-rs = { version = "0.7.1", features = ["bigint"] }
+pem = "3.0.6"
+x509-parser = "0.18.0"

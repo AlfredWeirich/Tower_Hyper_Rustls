@@ -1,583 +1,863 @@
+//! # Server Binary — Entry Point & Lifecycle
+//!
+//! This is the main executable for the server application. It orchestrates:
+//!
+//! 1. **Configuration loading** via [`Config::init`].
+//! 2. **Tokio runtime creation** with a configurable number of worker threads.
+//! 3. **Tracing / logging setup** (stdout + optional rolling-file appender).
+//! 4. **Per-server task spawning** — each `[[Server]]` block in `Config.toml`
+//!    becomes an independent Tokio task.
+//! 5. **Dual-stack listeners** — HTTPS servers accept both TCP (HTTP/1.1 + H2)
+//!    and UDP (HTTP/3 via QUIC) on the **same port**.
+//! 6. **Graceful shutdown** on `Ctrl-C` using a shared [`CancellationToken`].
+//!
+//! ## Architecture Overview
+//!
+//! ```text
+//! main()
+//!   └─ main_async()                       (tokio runtime)
+//!       ├─ start_single_server(server_A)  (spawned task)
+//!       │   ├─ build_service_stack()
+//!       │   └─ run_dual_stack()
+//!       │       ├─ run_tcp_listener()     (HTTP/1.1, H2)
+//!       │       └─ run_udp_listener()     (H3/QUIC)
+//!       ├─ start_single_server(server_B)
+//!       │   └─ …
+//!       └─ Ctrl-C handler → CancellationToken
+//! ```
+//!
+//! ## Example `curl` Invocations
+//!
+//! ```bash
+//! # HTTP/2 + mTLS + help endpoint
+//! curl -v --http2 \
+//!   --cert client_certs/client.cert.pem \
+//!   --key  client_certs/client.key.pem \
+//!   --cacert server_certs/self_signed/myca.pem \
+//!   https://192.168.178.175:1337/help
+//!
+//! # HTTP/3 + JWT + JSON PUT
+//! echo '{"status": "updated"}' | curl -v --http3 -X PUT \
+//!   --cert client_certs/client.cert.pem \
+//!   --key  client_certs/client.key.pem \
+//!   --cacert server_certs/self_signed/myca.pem \
+//!   -H "Authorization: Bearer $(cat ./jwt/token1.jwt)" \
+//!   -H "Content-Type: application/json" \
+//!   --data-binary @- https://192.168.178.175:1337/
+//! ```
+
 // tokio console: https://tokio.rs/tokio/topics/tracing-next-steps
 
-// === External Crates ===
-use anyhow::Error;
-use tracing::{Subscriber, error, trace};
-use tracing_appender::rolling::RollingFileAppender;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
-
 // === Standard Library ===
-use core::net::SocketAddr;
-use std::{io, sync::Arc, time::Duration};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
-// === Tokio: Async Runtime, I/O, and Networking ===
+// === External Crates ===
+use anyhow::{Context, Error};
+use hyper::Request;
+use hyper_util::rt::TokioIo;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     runtime::Builder,
 };
 
-// === Hyper & Hyper Util ===
-use hyper_util::{rt::TokioIo, service::TowerToHyperService};
-
-// === Tower (Middleware, Service) ===
+use tokio_util::sync::CancellationToken;
 use tower::{Layer, ServiceExt, limit::ConcurrencyLimit};
-// === TLS/Rustls ===
-use tokio_rustls::TlsAcceptor;
+use tracing::{error, info, trace};
+use tracing_appender::{non_blocking::WorkerGuard, rolling::RollingFileAppender};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
-// === Application Modules ===
-// Middleware
-mod middleware;
-use middleware::{
-    CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, LoggerLayer,
-    RouterService, SimpleRateLimiterLayer, TimingLayer, TokenBucketRateLimiterLayer,
+// === Internal Modules ===
+use server::configuration::UserRole;
+use server::{
+    BoxedCloneService, ConnectionHandler,
+    configuration::{
+        AuthenticationMethod, CompiledAllowedPathes, Config, MiddlewareLayer, Protocol,
+        ServerConfig, ServiceType,
+    },
+    middleware::{
+        CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, LoggerLayer,
+        MaxPayloadLayer, RouterService, SimpleRateLimiterLayer, TimingLayer,
+        TokenBucketRateLimiterLayer,
+        alt_svc::AltSvcLayer,
+        compression::{SrvCompressionLayer, SrvDecompressionLayer},
+    },
+    tls_conf::{extract_oids_from_cert, tls_config},
 };
 
-// TLS Configuration
-mod tls_conf;
-use tls_conf::tls_config;
+use http_body_util::BodyExt;
+use hyper::Response;
+use hyper_util::rt::TokioExecutor;
+use hyper_util::server::conn::auto;
+use rustls::ServerConfig as RustlsServerConfig;
+use server::H3Body;
 
-// Server Configuration
-mod configuration;
-use configuration::{
-    ClientCertConfig, CompiledAllowedPathes, Config, MiddlewareLayer, RateLimiter,
-    ServerCertConfig, ServerConfig, get_configuration,
-};
-
-// === Type Alias ===
-// These are type aliases for ergonomics, not repeated here for brevity.
-use server::BoxedCloneService;
-use server::BoxedHyperService;
-
-/// Main program entry point.
+///    Main entry point for the server application.
 ///
-/// Responsibilities:
-/// - Parses command-line arguments for config file location
-/// - Loads configuration
-/// - Initializes tracing/logging
-/// - Starts the Tokio runtime with configured worker threads
-/// - Executes the async server startup logic
-///
-/// Returns:
-/// - `Ok(())` on successful exit
-/// - `Err(anyhow::Error)` if any stage fails
-///
-/// === Notes to test the server ===
-/// Sample curl commands to test the server (mTLS, HTTP/1.1, HTTP/2):
-/// curl -v --http2 --cert client_certs/client.cert.pem --key client_certs/client.key.pem https://www.aweirich.eu:1337/help
-/// curl -v --http1.1 --cert client.cert.pem --key client.key.pem https://www.aweirich.eu:443/help
-/// curl -v --http1.1 --cert client.cert.pem --key client.key.pem http://www.aweirich.eu:443/help
-/// curl -v https://www.aweirich.eu:1337   -H "Authorization: Bearer $(cat ./jwt/token1.jwt)"
-/// wrk -t16 -c256 -d30s  https://192.168.178.26:1337
-fn main() -> Result<(), anyhow::Error> {
-    // Read config file path from the first CLI argument or use a default.
+/// This function is the "synchronous" wrapper that starts the program.
+/// It performs the following steps:
+/// 1. **Parse Arguments**: Looks for a configuration file path (default: `Config.toml`).
+/// 2. **Load Configuration**: Reads and parses the global settings.
+/// 3. **Setup Logging**: Initializes the tracing system to see what the server is doing.
+/// 4. **Build Runtime**: Starts the Tokio runtime, which is the engine that drives all asynchronous tasks.
+/// 5. **Start Server**: Launches the main asynchronous loop.
+fn main() -> Result<(), Error> {
     let arg = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "Config.toml".to_string());
 
-    // Load application configuration.
-    let config = get_configuration(&arg)?;
+    // Initialize the global configuration from the provided file.
+    // This uses a OnceLock pattern for safe, global read access.
+    let config = Config::init(&arg)?;
 
-    // Decide how many Tokio worker threads to spawn.
-    let tokio_threads = config.tokio_threads.unwrap_or(num_cpus::get() * 2);
+    // Determine the number of Tokio worker threads. Defaults to 2x logical CPUs if not specified.
+    let tokio_threads = config.tokio_threads.unwrap_or_else(|| num_cpus::get());
 
-    // Set up structured tracing/logging (file or stdout, based on config).
+    // Setup the tracing/logging system (stdout and optional file appender).
+    // Use _guard to keep the non-blocking appender alive until the end of main.
+    let _tracing_guard = setup_tracing(config.log_dir.as_deref())?;
 
-    // normal tracing
-    setup_tracing(config.log_dir.as_deref())?;
-    // with tokio console
-    // console_subscriber::init();
-    trace!("Configuration from: {}", arg);
-    trace!("Servers Config: {:#?}", config);
+    info!("Configuration loaded from: {}", arg);
+    trace!("Full Config: {:#?}", config);
 
-    // Build a multi-threaded Tokio runtime for async execution.
+    // This installs 'ring' as the default provider for the entire process.
+    // Ensure you have the 'ring' feature enabled in rustls (usually default).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
+    // Build the high-performance multi-threaded Tokio runtime.
     let runtime = Builder::new_multi_thread()
         .worker_threads(tokio_threads)
         .enable_all()
         .build()
-        .unwrap();
+        .context("Failed to build Tokio runtime")?;
 
-    // Block on async main logic.
+    // Block the main thread on the execution of the asynchronous server loop.
     runtime.block_on(main_async(config))
 }
 
-/// Asynchronous server orchestration logic.
+/// The asynchronous main loop that manages multiple server instances.
 ///
-/// - Iterates over all configured servers
-/// - For each enabled server, spawns a Tokio task to start it
-/// - Never exits (blocks forever), so all servers remain running
-///
-/// Params:
-/// - `config`: The application-wide configuration (parsed from file)
-///
-/// Returns:
-/// - Always returns `Ok(())` (unless server task panics), as this function never completes.
-async fn main_async(config: &'static Config) -> Result<(), anyhow::Error> {
+/// Think of this as the "Mission Control" center.
+/// - It reads the list of servers from the config.
+/// - For each enabled server, it launches a separate, independent task (green thread).
+/// - It listens for a "Shutdown Signal" (like pressing Ctrl+C).
+/// - It ensures all servers stop gracefully before the program exits.
+async fn main_async(config: &'static Config) -> Result<(), Error> {
+    let cancel_token = CancellationToken::new();
+    let mut server_join_set = tokio::task::JoinSet::new();
+
+    // Iterate through all configured servers and spawn tasks for those that are enabled.
     for server_config in &config.servers {
-        match server_config.enabled {
-            Some(true) => { /* continue below */ }
-            _ => {
-                trace!("{}: Server is disabled, skipping", server_config.name);
-                continue;
-            }
+        if !server_config.enabled {
+            continue;
         }
 
-        // Start each enabled server on its own async task/thread.
-        tokio::spawn(async move {
-            start_single_server(&server_config).await;
+        let server_cancel_token = cancel_token.clone();
+        server_join_set.spawn(async move {
+            // Task-per-server model allows independent failures and management.
+            start_single_server(server_config, server_cancel_token).await;
         });
     }
-    // Block forever (until killed)
-    futures::future::pending::<()>().await;
 
+    // Wait for a shutdown signal or for any server task to complete.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received (Ctrl+C). Starting graceful shutdown...");
+            cancel_token.cancel(); // Signal all server tasks to stop accepting new connections
+        }
+    }
+
+    // Await the completion of all spawned server tasks.
+    while let Some(res) = server_join_set.join_next().await {
+        if let Err(e) = res {
+            error!("Server task panicked or failed prematurely: {:?}", e);
+        }
+    }
+
+    info!("All servers shut down cleanly.");
     Ok(())
 }
 
-/// Starts a single server instance.
+/// Starts a single server instance (HTTP or HTTPS/H3) based on the provided configuration.
 ///
-/// - Resolves bind address and opens a TCP listener
-/// - Configures TLS if enabled
-/// - Builds middleware/service stack (via Tower)
-/// - Accepts incoming TCP connections in a loop
-/// - For each new connection, spawns a task to handle the client session
+/// This is where the specific instructions for one server (one port) are executed.
 ///
-/// Params:
-/// - `server_config`: Shared reference to the per-server configuration
-async fn start_single_server(server_config: &'static ServerConfig) {
-    // Step 1: Resolve server bind address
-    let addr = match server_config.get_server_ip() {
-        Ok(addr) => {
-            trace!("{}: Binding to address: {}", server_config.name, addr);
-            addr
-        }
+/// # The Process:
+/// 1. **Resolve IP**: Finds the IP address to listen on.
+/// 2. **Build Stack**: Assembles the "chain of command" (middleware) that will handle each request.
+/// 3. **Check Protocol**:
+///    - **HTTPS**: Starts a "Dual Stack" listener. accessible via TCP (traditional web) AND UDP (modern HTTP/3).
+///    - **HTTP**: Starts a simple TCP listener for plaintext traffic.
+async fn start_single_server(
+    server_config: &'static ServerConfig,
+    cancel_token: CancellationToken,
+) {
+    let server_addr = match server_config.get_server_ip() {
+        Ok(addr) => addr,
         Err(e) => {
-            error!("Failed to resolve IP: {:?}", e);
+            error!("{}: Failed to resolve IP: {:?}", server_config.name, e);
             return;
         }
     };
 
-    // Step 2: Bind TCP listener (will fail if port is taken, etc)
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
+    // Build the service stack
+    let service_stack = match build_service_stack(server_config) {
+        Ok(svc) => svc,
         Err(e) => {
-            error!("Failed to bind: {:?}", e);
+            error!(
+                "{}: Failed to build service stack: {:?}",
+                server_config.name, e
+            );
             return;
         }
     };
 
-    // Step 3: If TLS is enabled, set up an acceptor
-    let tls_acceptor = match build_tls_acceptor(&server_config) {
-        Ok(opt) => opt.map(Arc::new),
-        Err(e) => {
-            error!("TLS error: {:?}", e);
-            return;
-        }
-    };
-    let tls_acceptor = Arc::new(tls_acceptor);
+    info!(
+        "{}: Listening on {} ({:?})",
+        server_config.name, server_addr, server_config.protocol
+    );
 
-    // Step 4: Build the Tower service/middleware stack
-    let service_stack = match build_service_stack(&server_config) {
-        Ok(svc) => TowerToHyperService::new(svc),
-        Err(e) => {
-            error!("Failed to build service: {:?}", e);
-            return;
-        }
-    };
-
-    // Step 5: Accept new TCP clients in an infinite loop
-    loop {
-        let (stream, peer_addr) = match listener.accept().await {
-            Ok(s) => s,
+    // === HTTPS / DUAL STACK PATH ===
+    if server_config.protocol == Protocol::Https {
+        let tls_config: RustlsServerConfig = match build_rustls_config(server_config) {
+            Ok(cfg) => cfg,
             Err(e) => {
-                error!("Accept failed: {:?}", e);
-                continue;
+                error!("{}: TLS Setup Error: {:?}", server_config.name, e);
+                return;
             }
         };
 
-        //let server_config = server_config.clone();
-        let tls_acceptor = tls_acceptor.clone();
-        let service_stack = service_stack.clone();
-
-        // Spawn new task for each connection to avoid blocking.
-        tokio::spawn(async move {
-            handle_connection(
-                stream,
-                peer_addr,
-                &server_config,
-                service_stack,
-                tls_acceptor,
-            )
-            .await;
-        });
-    }
-}
-
-/// Handles a single accepted client connection.
-///
-/// - If TLS is required, upgrades to TLS and dispatches to HTTP/1 or HTTP/2 handler (using ALPN)
-/// - Otherwise, handles plain HTTP/1.1
-///
-/// Params:
-/// - `stream`: The accepted TCP stream
-/// - `ip_addr`: Client socket address (for logging)
-/// - `config`: Server config
-/// - `service`: Tower service stack wrapped for Hyper
-/// - `tls_acceptor`: TLS acceptor if enabled, else None
-async fn handle_connection(
-    stream: TcpStream,
-    ip_addr: SocketAddr,
-    config: &'static ServerConfig,
-    service: TowerToHyperService<BoxedCloneService>,
-    tls_acceptor: Arc<Option<Arc<TlsAcceptor>>>,
-) {
-    if !config.use_tls() {
-        trace!("{}: Handling HTTP", config.name);
-        if let Err(e) = handle_http1_connection(stream, service).await {
-            error!("{}: HTTP error: {:?} / {}", config.name, e, ip_addr);
+        if let Err(e) = run_dual_stack(
+            server_addr,
+            tls_config,
+            service_stack,
+            cancel_token,
+            &server_config.name,
+        )
+        .await
+        {
+            error!(
+                "{}: HTTPS/Dual Stack Server crashed: {:?}",
+                server_config.name, e
+            );
         }
-        return;
-    }
+    } else {
+        // === HTTP (PLAINTEXT) FALLBACK ===
+        // Your original logic for plaintext HTTP only
+        let listener = match TcpListener::bind(server_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("{}: HTTP Bind failed: {}", server_config.name, e);
+                return;
+            }
+        };
 
-    // If we reach here, TLS is expected
-    let Some(ref acceptor) = *tls_acceptor else {
-        error!("{}: TLS expected but no acceptor configured.", config.name);
-        return;
-    };
-
-    // Begin TLS handshake
-    match acceptor.accept(stream).await {
-        Ok(tls_stream) => {
-            // Extract ALPN protocol (http/1.1 vs h2) after handshake
-            let alpn = tls_stream
-                .get_ref()
-                .1
-                .alpn_protocol()
-                .map(|proto| std::str::from_utf8(proto).unwrap_or("").to_owned());
-
-            // Route to appropriate HTTP handler
-            if let Err(err) = handle_https_connection(tls_stream, service, alpn).await {
-                if config.use_client_cert_auth() {
-                    error!(
-                        "{}: mTLS connection error: {:?} / {}",
-                        config.name, err, ip_addr
-                    );
-                } else {
-                    error!("{}: HTTPS error: {:?} / {}", config.name, err, ip_addr);
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                res = listener.accept() => {
+                    match res {
+                        Ok((stream, peer_addr)) => {
+                            let svc = service_stack.clone();
+                            let conn_token = cancel_token.clone();
+                            tokio::spawn(async move {
+                                let handler = ConnectionHandler::new(svc, peer_addr, Vec::new());
+                                let _ = handle_http1_connection(stream, handler, conn_token).await;
+                            });
+                        }
+                        Err(e) => error!("{}: HTTP Accept error: {}", server_config.name, e),
+                    }
                 }
             }
         }
-        Err(e) => {
-            error!("{}: TLS handshake failed: {:?}", config.name, e);
-        }
     }
 }
 
-/// Builds a TLS acceptor if TLS is enabled in config.
+/// Builds the service stack for a given server configuration.
 ///
-/// Returns:
-/// - `Ok(Some(TlsAcceptor))` if TLS enabled and configured correctly
-/// - `Ok(None)` if TLS is not enabled
-/// - `Err(_)` if configuration error (missing certs, invalid config)
-fn build_tls_acceptor(config: &'static ServerConfig) -> Result<Option<TlsAcceptor>, anyhow::Error> {
-    if !config.use_tls() {
-        return Ok(None);
-    }
-    let require_client_auth = config.use_client_cert_auth();
-    let server_certs = get_server_certs(config);
-    let client_certs = if require_client_auth {
-        get_client_certs(config)
-    } else {
-        None
-    };
-    setup_tls(
-        &config.name,
-        server_certs,
-        client_certs,
-        require_client_auth,
-    )
-    .map(Some)
-}
+/// This function takes a `ServerConfig` and constructs a `BoxedCloneService`
+/// by applying a series of middleware layers defined in the configuration.
+/// It also ensures that if an `InspectionLayer` is used, the `compiled_allowed_pathes`
+/// are correctly provided.
+///
+/// # Arguments
+/// * `config` - A static reference to the `ServerConfig` for which to build the service stack.
+///
+/// # Returns
+/// A `Result` which is `Ok` containing a `BoxedCloneService` if successful,
+/// or an `Error` if the service stack cannot be built (e.g., missing compiled paths).
+fn build_service_stack(server_config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
+    let layers = server_config.layers.build_middleware_layers()?;
 
-/// Loads and builds a TlsAcceptor based on provided cert configs.
-///
-/// Params:
-/// - `server_name`: Identifier for logging
-/// - `server_certs`: Server's certificate/key configuration
-/// - `client_certs`: Client certificate(s), if mTLS enabled
-/// - `require_client_auth`: Whether to require mTLS
-///   Returns:
-/// - Ok(TlsAcceptor) or error
-pub fn setup_tls(
-    server_name: &str,
-    server_certs: &ServerCertConfig,
-    client_certs: Option<&[ClientCertConfig]>,
-    require_client_auth: bool,
-) -> Result<TlsAcceptor, Error> {
-    let tls_config = tls_config(server_name, server_certs, client_certs, require_client_auth)?;
-    Ok(TlsAcceptor::from(Arc::new(tls_config)))
-}
+    // Ensure compiled paths are available.
+    // While the InspectionLayer will also validate this, checking here provides
+    // an early configuration error if the paths are missing when needed.
+    let compiled_allowed_pathes =
+        server_config
+            .compiled_allowed_pathes
+            .as_ref()
+            .context(format!(
+                "Server '{}': Compiled paths missing",
+                server_config.name
+            ))?;
 
-/// Constructs the Tower service stack for this server, composing all middleware layers.
-///
-/// - Reads the configured middleware stack
-/// - Creates the base service (Echo or Router)
-/// - Applies all middleware layers in order
-/// - Returns boxed, cloneable service compatible with Hyper
-///
-/// Params:
-/// - `config`: Server config (defines middleware, allowed paths, etc)
-///   Returns:
-/// - Ok(BoxedCloneService) or error (if layer fails to build)
-fn build_service_stack(config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
-    let layers = config.layers.build_middleware_layers()?;
-    let compiled_routes = config.compiled_allowed_pathes.as_ref().unwrap();
-
-    let service_name = config.service.as_str();
-    let server_name = config.name.as_str();
-    let base_service = match service_name {
-        "Echo" => EchoService::new(server_name).boxed_clone(),
-        "Router" => RouterService::new(config).boxed_clone(),
-        _ => {
-            error!("Unknown service name: {}", service_name);
-            EchoService::new(server_name).boxed_clone()
-        }
+    let base_service = match server_config.service {
+        ServiceType::Echo => EchoService::new(&server_config.name).boxed_clone(),
+        ServiceType::Router => RouterService::new(server_config).boxed_clone(),
     };
 
     Ok(apply_layers(
-        base_service,
+        base_service, // The core service (Echo or Router) handling the request
         layers,
-        server_name,
-        compiled_routes,
+        &server_config.name,
+        compiled_allowed_pathes,
+        server_config.port,
     ))
 }
 
-/// Applies all middleware layers to a base service in order, returning the fully stacked service.
+/// Applies the configured middleware layers to the base service.
 ///
-/// Supported middleware types:
-/// - Timing, Counter, Logger, RateLimiter (simple/token-bucket), Delay, JWT auth, Inspection
+/// This function builds the final service stack by wrapping the base service with each middleware layer
+/// defined in the configuration. The layers are applied in reverse order (outside-in execution flow),
+/// so the first layer in the list is the outermost wrapper.
 ///
-/// Params:
-/// - `service`: The initial base service (usually Echo/Router)
-/// - `layers`: List of middleware layers to apply, in order
-/// - `server_name`: For logging/context
-/// - `compiled_routes`: Allowed/recognized routes (for inspection layer)
+/// # Arguments
 ///
-/// Returns:
-/// - The fully composed boxed service
+/// * `service` - The base service (e.g., Echo or Router) to wrap.
+/// * `layers` - A list of middleware layers to apply.
+/// * `server_name` - The name of the server, used for logging and metrics.
+/// * `compiled_allowed_pathes` - Pre-compiled regex paths for the inspection layer (if used).
+/// * `server_port` - The port the server listens on, used for `Alt-Svc` headers.
+///
+/// # Returns
+///
+/// A `BoxedCloneService` representing the full middleware stack ready to handle requests.
 fn apply_layers(
     service: BoxedCloneService,
     layers: Vec<MiddlewareLayer>,
     server_name: &'static str,
-    compiled_routes: &'static CompiledAllowedPathes,
+    compiled_allowed_pathes: &'static CompiledAllowedPathes,
+    server_port: u16, // <--- Add this argument
 ) -> BoxedCloneService {
-    // Fold all layers in order, wrapping service at each step
-    layers.into_iter().fold(service, |svc, layer| match layer {
-        MiddlewareLayer::Timing => {
-            trace!("{}: Timing middleware enabled", server_name);
-            TimingLayer::new(server_name).layer(svc).boxed_clone()
-        }
-        MiddlewareLayer::Counter => {
-            trace!("{}: Counter middleware enabled", server_name);
-            CountingLayer::new(server_name).layer(svc).boxed_clone()
-        }
-
-        MiddlewareLayer::Logger => {
-            //let _x=LoggerLayer::new(server_name).layer(svc).get_s();
-            trace!("{}: Logger middleware enabled", server_name);
-            LoggerLayer::new(server_name).layer(svc).boxed_clone()
-        }
-        MiddlewareLayer::RateLimiter(RateLimiter::Simple(cfg)) => {
-            trace!("{}: SimpleRateLimiter middleware enabled", server_name);
-            let dur = Duration::from_secs_f32(1. / cfg.requests_per_second as f32);
-            SimpleRateLimiterLayer::new(dur, server_name)
+    layers
+        .into_iter()
+        .rev()
+        .fold(service, |svc, layer| match layer {
+            MiddlewareLayer::Timing => TimingLayer::new(server_name).layer(svc).boxed_clone(),
+            MiddlewareLayer::Counter => CountingLayer::new(server_name).layer(svc).boxed_clone(),
+            MiddlewareLayer::Logger => LoggerLayer::new(server_name).layer(svc).boxed_clone(),
+            MiddlewareLayer::Inspection => {
+                InspectionLayer::new(compiled_allowed_pathes, server_name)
+                    .layer(svc)
+                    .boxed_clone()
+            }
+            MiddlewareLayer::Delay(micros) => {
+                DelayLayer::new(Duration::from_micros(micros), server_name)
+                    .layer(svc)
+                    .boxed_clone()
+            }
+            MiddlewareLayer::JwtAuth(keys) => JwtAuthLayer::new(keys, server_name)
+                .layer(svc)
+                .boxed_clone(),
+            MiddlewareLayer::RateLimiter(server::configuration::RateLimiter::Simple(cfg)) => {
+                let dur = Duration::from_secs_f32(1.0 / cfg.requests_per_second as f32);
+                SimpleRateLimiterLayer::new(dur, server_name)
+                    .layer(svc)
+                    .boxed_clone()
+            }
+            MiddlewareLayer::RateLimiter(server::configuration::RateLimiter::TokenBucket(cfg)) => {
+                TokenBucketRateLimiterLayer::new(
+                    cfg.max_capacity,
+                    cfg.refill,
+                    Duration::from_micros(cfg.duration_micros),
+                    server_name,
+                )
                 .layer(svc)
                 .boxed_clone()
-        }
-        MiddlewareLayer::Delay(cfg) => {
-            trace!(
-                "{}: Delay middleware enabled: {:?}",
-                server_name, cfg.delay_micros
-            );
-            let dur = Duration::from_micros(cfg.delay_micros);
-            DelayLayer::new(dur, server_name).layer(svc).boxed_clone()
-        }
-        MiddlewareLayer::JwtAuth(cfg) => {
-            trace!("{}: JWT middleware enabled: {:?}", server_name, cfg);
-            JwtAuthLayer::new(cfg, server_name).layer(svc).boxed_clone()
-        }
-        MiddlewareLayer::RateLimiter(RateLimiter::TokenBucket(cfg)) => {
-            trace!("{}: TokenBucketRateLimiter middleware enabled", server_name);
-            TokenBucketRateLimiterLayer::new(
-                cfg.max_capacity,
-                cfg.refill,
-                Duration::from_micros(cfg.duration_micros),
-                server_name,
-            )
-            .layer(svc)
-            .boxed_clone()
-        }
-        MiddlewareLayer::Inspection => {
-            trace!("{}: Inspection middleware enabled", server_name);
-            InspectionLayer::new(compiled_routes, server_name)
+            }
+            MiddlewareLayer::ConcurrencyLimit(max_requests) => {
+                // Here we directly use the extracted usize value
+                ConcurrencyLimit::new(svc, max_requests).boxed_clone()
+            }
+            MiddlewareLayer::Compression => SrvCompressionLayer::new(server_name)
                 .layer(svc)
-                .boxed_clone()
-        }
-
-        MiddlewareLayer::ConcurrencyLimit(cfg) => {
-            trace!("{}: Concurrency middleware enabled", server_name);
-            let concurrent = cfg.max_concurrent_requests;
-            let limited_service = ConcurrencyLimit::new(svc, concurrent).boxed_clone();
-            limited_service
-        }
-    })
+                .boxed_clone(),
+            MiddlewareLayer::Decompression(max_bytes) => {
+                SrvDecompressionLayer::new(server_name, max_bytes)
+                    .layer(svc)
+                    .boxed_clone()
+            }
+            MiddlewareLayer::MaxPayload(max_bytes) => MaxPayloadLayer::new(max_bytes, server_name)
+                .layer(svc)
+                .boxed_clone(),
+            MiddlewareLayer::AltSvc => {
+                // We use the actual running port of the server
+                AltSvcLayer::new(server_port).layer(svc).boxed_clone()
+            }
+        })
 }
 
-/// Handles an incoming HTTP/2 connection, dispatching requests to the provided service.
+// --- Hyper Connection Helpers ---
+
+/// Handles a single HTTP/1.1 (or upgrade to HTTP/2) connection on a given stream.
 ///
-/// Params:
-/// - `stream`: Any AsyncRead+AsyncWrite stream (plain or TLS-wrapped)
-/// - `service`: Hyper-compatible Tower service
+/// This function uses `hyper` to serve the connection using the provided `ConnectionHandler`.
+/// It integrates with a cancellation token to allow graceful shutdown of the individual connection.
 ///
-/// Returns:
-/// - Ok(()) on clean session close
-/// - Err(hyper::Error) on I/O/service error
-pub async fn handle_http2_connection<I>(
+/// # Type Parameters
+///
+/// * `I`: The asynchronous I/O stream type (e.g., `TcpStream`, `TlsStream`).
+async fn handle_http1_connection<I>(
     stream: I,
-    service: BoxedHyperService,
+    handler: ConnectionHandler,
+    token: CancellationToken,
 ) -> Result<(), hyper::Error>
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    // Use Hyper's HTTP/2 server connection builder (Tokio executor)
-    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection(TokioIo::new(stream), service)
-        .await
-}
+    let conn =
+        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), handler);
+    let mut conn = std::pin::pin!(conn);
 
-/// Handles a TLS-wrapped connection: determines negotiated protocol and dispatches to HTTP/2 or HTTP/1 handler as needed.
-///
-/// - Reads ALPN result to pick protocol.
-/// - Falls back to HTTP/1.1 if ALPN is missing or unknown.
-///
-/// Params:
-/// - `tls_stream`: TLS session (must implement AsyncRead/AsyncWrite)
-/// - `service`: Hyper-compatible Tower service
-/// - `alpn`: Optionally, the negotiated protocol (as string)
-///
-/// Returns:
-/// - Ok(()) on successful completion
-/// - Err(io::Error) if the handshake/protocol is unsupported or errors
-pub async fn handle_https_connection<I>(
-    tls_stream: I,
-    service: BoxedHyperService,
-    alpn: Option<String>,
-) -> Result<(), io::Error>
-where
-    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    // Dispatch based on ALPN protocol string.
-    match alpn.as_deref() {
-        Some("h2") => handle_http2_connection(tls_stream, service)
-            .await
-            .map_err(|e| io::Error::other(format!("Hyper error: {e}"))),
-        Some("http/1.1") | Some("http/1.0") | None => handle_http1_connection(tls_stream, service)
-            .await
-            .map_err(|e| io::Error::other(format!("Hyper error: {e}"))),
-        Some(other) => {
-            // Unsupported protocol (could log, reject, or fallback)
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("Unsupported ALPN protocol: {other}"),
-            ))
+    tokio::select! {
+        res = conn.as_mut() => res,
+        _ = token.cancelled() => {
+            conn.as_mut().graceful_shutdown();
+            conn.await
         }
     }
 }
 
-/// Handles a plain HTTP/1.1 connection, dispatching to the provided Tower service stack.
+// === Refactored run_dual_stack ===
+
+/// Runs a dual-stack server supporting both TCP (HTTP/1.1, HTTP/2) and UDP (HTTP/3).
 ///
-/// Params:
-/// - `stream`: AsyncRead+AsyncWrite stream (plain or TLS-wrapped)
-/// - `service`: Hyper-compatible Tower service
+/// # What is "Dual Stack"?
+/// Modern web servers often need to speak two different "languages" on the transport layer:
+/// 1. **TCP (Transmission Control Protocol)**: The traditional, reliable way to send data. Used for HTTP/1.1 and HTTP/2.
+/// 2. **UDP (User Datagram Protocol)**: A faster, but less strict way to send data. Used for HTTP/3 (QUIC).
 ///
-/// Returns:
-/// - Ok(()) on clean close
-/// - Err(hyper::Error) on connection or service error
-pub async fn handle_http1_connection<I>(
-    stream: I,
-    service: BoxedHyperService,
-) -> Result<(), hyper::Error>
-where
-    I: AsyncRead + AsyncWrite + Unpin,
-{
-    // hyper::server::conn::http1 only serves HTTP/1.x
-    hyper::server::conn::http1::Builder::new()
-        .serve_connection(TokioIo::new(stream), service)
-        .await
+/// This function starts TWO listeners on the same port: one for TCP and one for UDP.
+pub async fn run_dual_stack(
+    server_addr: SocketAddr,
+    tls_config: RustlsServerConfig,
+    service_stack: BoxedCloneService,
+    cancel_token: CancellationToken,
+    server_name: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let arc_tls_config = Arc::new(tls_config);
+
+    // We need two tokens for the two listeners
+    let tcp_cancel_token = cancel_token.clone();
+    let udp_cancel_token = cancel_token; // move the original
+
+    // 1. TCP Listener (HTTP/1.1 & HTTP/2)
+    let tcp_handle = run_tcp_listener(
+        server_addr,
+        arc_tls_config.clone(),
+        service_stack.clone(),
+        tcp_cancel_token,
+        server_name,
+    );
+
+    // 2. UDP Listener (HTTP/3)
+    let udp_handle = run_udp_listener(
+        server_addr,
+        arc_tls_config,
+        service_stack,
+        udp_cancel_token,
+        server_name,
+    );
+
+    // Wait for both listeners to finish (shutdown signal)
+    let _ = tokio::join!(tcp_handle, udp_handle);
+    Ok(())
 }
 
-/// Sets up structured tracing/logging.
+/// Runs the TCP listener for HTTPS traffic (supporting HTTP/1.1 and HTTP/2).
 ///
-/// - Configures stdout logging, and optionally file logging (if a directory is given)
-/// - Loads log filter level from environment variable `RUST_LOG` or defaults to "info"
-/// - Uses `tracing-subscriber` to register a global subscriber
-///
-/// Params:
-/// - `log_dir`: Optional directory for rolling log file output
-///   Returns:
-/// - Ok(()) or error if setup fails
-fn setup_tracing(log_dir: Option<&str>) -> Result<(), Error> {
-    let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
+/// # How it works:
+/// 1. **Bind**: Reserves the port for TCP connections.
+/// 2. **Accept**: Waits for a client (like a browser) to connect.
+/// 3. **Handshake**: Performs the TLS "secret handshake" to encrypt the connection.
+/// 4. **Identify**: Checks the client's certificate for special IDs (OIDs) to know who they are.
+/// 5. **Serve**: Starts a task to handle the requests using `hyper` (the HTTP engine).
+async fn run_tcp_listener(
+    server_addr: SocketAddr,
+    tls_config: Arc<RustlsServerConfig>,
+    service_stack: BoxedCloneService,
+    cancel_token: CancellationToken,
+    server_name: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let tcp_listener = TcpListener::bind(server_addr).await?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
 
-    // stdout layer
-    let stdout_layer = fmt::layer().with_ansi(true).with_writer(std::io::stdout);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                res = tcp_listener.accept() => {
+                    if let Ok((stream, peer_addr)) = res {
+                        let acceptor = acceptor.clone();
+                        let svc = service_stack.clone();
+                        tokio::spawn(async move {
+                            trace!("{}: TCP Connection accepted", server_name);
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    // --- TCP OID EXTRACTION ---
+                                    let (_, session) = tls_stream.get_ref();
+                                    let certs = session.peer_certificates();
 
-    // Build a boxed subscriber
-    let subscriber: Box<dyn Subscriber + Send + Sync> = match log_dir {
-        Some(dir) => {
-            let file_appender: RollingFileAppender =
-                tracing_appender::rolling::daily(dir, "app.log");
+                                    let client_oids = certs
+                                        .and_then(|c| c.first())
+                                        .map(|cert| extract_oids_from_cert(cert.as_ref()))
+                                        .unwrap_or_default();
 
-            let file_layer = fmt::layer().with_ansi(false).with_writer(file_appender);
+                                    // Use the standard constructor which wraps Vec in Arc
+                                    let handler = ConnectionHandler::new(svc, peer_addr, client_oids);
 
-            Box::new(
-                Registry::default()
-                    .with(env_filter)
-                    .with(stdout_layer)
-                    .with(file_layer),
-            )
+                                    let _ = auto::Builder::new(TokioExecutor::new())
+                                        .serve_connection(TokioIo::new(tls_stream), handler)
+                                        .await;
+                                }
+                                Err(e) => {
+                                    error!("{}: TLS Handshake failed: {}", server_name, e);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
         }
-        None => Box::new(Registry::default().with(env_filter).with(stdout_layer)),
-    };
-
-    // Set global subscriber
-    tracing::subscriber::set_global_default(subscriber)?;
+    });
 
     Ok(())
 }
 
-/// Utility: Gets the server's certificate config from server config.
-/// - Panics/aborts if not set but TLS is enabled, to prevent silent misconfiguration.
-fn get_server_certs(config: &ServerConfig) -> &ServerCertConfig {
-    config.server_certs.as_ref().unwrap_or_else(|| {
-        error!(
-            "{}: TLS is enabled but no [server_certs] provided",
-            config.name
-        );
-        std::process::exit(1);
-    })
+/// Runs the UDP listener for HTTP/3 traffic using QUIC (via `quinn` and `h3`).
+///
+/// # What is QUIC?
+/// QUIC is a new transport protocol that runs on top of UDP. It's designed to be faster and more secure than TCP+TLS.
+///
+/// # Key Steps:
+/// 1. **Config**: Sets up specific settings for QUIC (like telling clients "I speak h3").
+/// 2. **Bind**: Reserves the port for UDP packets.
+/// 3. **Listen**: Waits for QUIC packets to arrive.
+/// 4. **Handle**: When a connection forms, it hands it off to `handle_h3_connection`.
+async fn run_udp_listener(
+    server_addr: SocketAddr,
+    tls_config: Arc<RustlsServerConfig>,
+    service_stack: BoxedCloneService,
+    cancel_token: CancellationToken,
+    server_name: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Determine if we need to modify the TLS config for QUIC (ALPN)
+    // Quinn expects explicit "h3" ALPN
+    let mut quic_tls_models = rustls::ServerConfig::clone(&tls_config);
+    quic_tls_models.alpn_protocols = vec![b"h3".to_vec()];
+
+    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(quic_tls_models)
+        .map_err(|e| format!("TLS Config Error for QUIC: {e}"))?;
+
+    let mut quinn_server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+    quinn_server_config.transport_config(Arc::new(quinn::TransportConfig::default()));
+
+    // Bind UDP socket
+    let endpoint = quinn::Endpoint::server(quinn_server_config, server_addr)?;
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                res = endpoint.accept() => {
+                    if let Some(conn) = res {
+                        trace!("{}: UDP Connection accepted", server_name);
+                        let svc = service_stack.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_h3_connection(conn, svc, server_name).await {
+                                error!("{}: H3 Connection Error: {:?}", server_name, e);
+                            }
+                        });
+                    } else {
+                        break; // Endpoint closed
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(())
 }
 
-/// Utility: Gets the client certificate config for mTLS from server config.
-/// - Panics/aborts if mTLS is enabled but certs missing.
-fn get_client_certs(config: &ServerConfig) -> Option<&[ClientCertConfig]> {
-    match config.client_certs.as_ref() {
-        Some(certs) if !certs.is_empty() => Some(certs.as_slice()),
-        _ => {
-            error!(
-                "{}: mTLS is enabled but no [[client_certs]] provided",
-                config.name
-            );
-            std::process::exit(1);
+/// Handles a single HTTP/3 (QUIC) connection.
+///
+/// Unlike TCP where the OS handles the connection mostly, here we have to do a bit more work.
+///
+/// # Work Flow:
+/// 1. **Connect**: Finishes establishing the QUIC connection.
+/// 2. **Verify**: Checks who the client is (using their certificate) - **Just once** for the whole connection!
+/// 3. **Loop**: Enters a loop where it waits for individual "Streams" (Requests).
+///    - In HTTP/3, one connection can carry MANY requests at the same time.
+/// 4. **Serve**: Passes each request to our `ConnectionHandler`.
+async fn handle_h3_connection(
+    connecting: quinn::Incoming,
+    service_stack: BoxedCloneService,
+    #[allow(unused_variables)] server_name: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Establish QUIC connection
+    let connection = connecting.await?;
+    let peer_addr = connection.remote_address();
+
+    // 2. Extract OIDs (Strings)
+    let mut oids = Vec::new();
+    if let Some(identity) = connection.peer_identity() {
+        if let Some(certs) =
+            identity.downcast_ref::<Vec<rustls_pki_types::CertificateDer<'static>>>()
+        {
+            for c in certs {
+                oids.extend(extract_oids_from_cert(c.as_ref()));
+            }
         }
+    }
+
+    // --- OPTIMIZATION START ---
+    // Convert OIDs (Strings) to Roles (Enums) ONCE for the whole connection.
+    let config = Config::global();
+    let mut roles: Vec<UserRole> = oids
+        .iter()
+        .map(|oid| config.map_oid_to_role(oid))
+        .filter(|role| *role != UserRole::Guest)
+        .collect();
+
+    if roles.is_empty() {
+        roles.push(UserRole::Guest);
+    }
+
+    // Wrap the ROLES in Arc, not the OIDs.
+    let shared_roles = Arc::new(roles);
+    // --- OPTIMIZATION END ---
+
+    // 3. HTTP/3 Connection Setup
+    let h3_conn = h3_quinn::Connection::new(connection);
+    let mut h3_server: h3::server::Connection<h3_quinn::Connection, bytes::Bytes> =
+        h3::server::Connection::new(h3_conn).await?;
+
+    // 4. Request Loop
+    loop {
+        match h3_server.accept().await {
+            Ok(Some(resolver)) => {
+                let svc = service_stack.clone();
+                // Cheap clone of the already calculated roles
+                let roles_for_req = shared_roles.clone();
+
+                tokio::spawn(async move {
+                    match resolver.resolve_request().await {
+                        Ok((req, stream)) => {
+                            let (mut sender, receiver) = stream.split();
+
+                            // Pass the ROLES to new_shared
+                            let handler =
+                                ConnectionHandler::new_shared(svc, peer_addr, roles_for_req);
+
+                            let (parts, _) = req.into_parts();
+                            let body = H3Body::new(receiver);
+                            let hyper_req = Request::from_parts(parts, body.boxed());
+
+                            if let Ok(res) = handler.handle(hyper_req).await {
+                                let (res_parts, mut res_body) = res.into_parts();
+
+                                if sender
+                                    .send_response(Response::from_parts(res_parts, ()))
+                                    .await
+                                    .is_ok()
+                                {
+                                    while let Some(frame) = res_body.frame().await {
+                                        if let Ok(data) = frame.unwrap().into_data() {
+                                            if sender.send_data(data).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let _ = sender.finish().await;
+                                }
+                            }
+                        }
+                        Err(e) => error!("H3 Request Error: {e}"),
+                    }
+                });
+            }
+            Ok(None) => break,
+            Err(_e) => break,
+        }
+    }
+    Ok(())
+}
+// async fn handle_h3_connection(
+//     connecting: quinn::Incoming,
+//     service_stack: BoxedCloneService,
+//     server_name: &str,
+// ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//     // 1. Establish QUIC connection
+//     let connection = connecting.await?;
+//     let peer_addr = connection.remote_address();
+
+//     // 2. Extract OIDs ONCE per connection
+//     let mut oids = Vec::new();
+//     if let Some(identity) = connection.peer_identity() {
+//         if let Some(certs) =
+//             identity.downcast_ref::<Vec<rustls_pki_types::CertificateDer<'static>>>()
+//         {
+//             for c in certs {
+//                 oids.extend(extract_oids_from_cert(c.as_ref()));
+//             }
+//         } else {
+//             error!(
+//                 "{}: QUIC Identity present but downcast failed.",
+//                 server_name
+//             );
+//         }
+//     }
+
+//     // Wrap OIDs in Arc for cheap sharing across requests on this connection
+//     let shared_oids = Arc::new(oids);
+
+//     // 3. HTTP/3 Connection Setup
+//     let h3_conn = h3_quinn::Connection::new(connection);
+//     let mut h3_server = h3::server::Connection::new(h3_conn).await?;
+
+//     // 4. Request Loop
+//     loop {
+//         match h3_server.accept().await {
+//             Ok(Some(resolver)) => {
+//                 let svc = service_stack.clone();
+//                 let oids = shared_oids.clone(); // Cheap Arcc clone
+
+//                 tokio::spawn(async move {
+//                     match resolver.resolve_request().await {
+//                         Ok((req, stream)) => {
+//                             let (mut sender, receiver) = stream.split();
+
+//                             // Use the new_shared constructor for existing Arc
+//                             let handler = ConnectionHandler::new_shared(svc, peer_addr, oids);
+
+//                             let (parts, _) = req.into_parts();
+//                             let body = H3Body::new(receiver);
+//                             let hyper_req = Request::from_parts(parts, body.boxed());
+
+//                             if let Ok(res) = handler.handle(hyper_req).await {
+//                                 let (res_parts, mut res_body) = res.into_parts();
+
+//                                 if sender
+//                                     .send_response(Response::from_parts(res_parts, ()))
+//                                     .await
+//                                     .is_ok()
+//                                 {
+//                                     while let Some(frame) = res_body.frame().await {
+//                                         if let Ok(data) = frame.unwrap().into_data() {
+//                                             if sender.send_data(data).await.is_err() {
+//                                                 break;
+//                                             }
+//                                         }
+//                                     }
+//                                     let _ = sender.finish().await;
+//                                 }
+//                             }
+//                         }
+//                         Err(e) => error!("H3 Request Error: {e}"),
+//                     }
+//                 });
+//             }
+//             Ok(None) => break, // Connection closed by client
+//             Err(e) => {
+//                 trace!("H3 Connection closed: {e}");
+//                 break;
+//             }
+//         }
+//     }
+//     Ok(())
+// }
+
+/// Helper function to build the Rustls server configuration.
+///
+/// It loads the server's certificate chain and private key.
+/// If client certificate authentication (mTLS) is enabled, it also loads the client CA roots.
+fn build_rustls_config(config: &'static ServerConfig) -> Result<RustlsServerConfig, Error> {
+    let server_certs = config.server_certs.as_ref().context(format!(
+        "{}: HTTPS enabled but no server_certs",
+        config.name
+    ))?;
+
+    let client_certs = if config.authentication == AuthenticationMethod::ClientCert {
+        Some(
+            config
+                .client_certs
+                .as_deref()
+                .context("mTLS enabled but no client_certs")?,
+        )
+    } else {
+        None
+    };
+
+    // Use your existing tls_config function
+    let tls_config = tls_config(
+        &config.name,
+        server_certs,
+        client_certs,
+        config.authentication == AuthenticationMethod::ClientCert,
+    )?;
+
+    Ok(tls_config)
+}
+
+// --- Logging Setup ---
+
+/// Configures the global tracing subscriber for logging.
+///
+/// # Arguments
+///
+/// * `log_dir` - An optional directory path. If provided, logs will also be written to rolling files
+///               in this directory (rotated daily). If `None`, logs are written only to stdout.
+///
+/// By default, it uses the `RUST_LOG` environment variable filter (defaulting to "info").
+fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stdout_layer = fmt::layer().with_ansi(true);
+
+    if let Some(dir) = log_dir {
+        let file_appender = RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("app")
+            .filename_suffix("log")
+            .build(dir)?;
+
+        // PERFORMANCE FIX: Use non_blocking wrapper
+        let (non_blocking_appender, _guard) = tracing_appender::non_blocking(file_appender);
+
+        // Note: You must hold `_guard` until the end of main(),
+        // or logs might be dropped on shutdown.
+        // You might need to change the function signature to return the guard.
+
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_writer(non_blocking_appender);
+
+        let subscriber = Registry::default()
+            .with(env_filter)
+            .with(stdout_layer)
+            .with(file_layer);
+
+        tracing::subscriber::set_global_default(subscriber)?;
+
+        // Return the guard so it's not dropped
+        return Ok(Some(_guard));
+    } else {
+        let subscriber = Registry::default().with(env_filter).with(stdout_layer);
+        tracing::subscriber::set_global_default(subscriber)?;
+        Ok(None)
     }
 }

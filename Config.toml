@@ -1,200 +1,183 @@
+###############################################################################
+# GLOBAL SYSTEM SETTINGS
+# These settings affect the overall performance and base identity of the gateway.
+###############################################################################
 
-# number of threads for Tokio to use for the server, 
-# if not set, it defaults to the number of CPU cores times 2
-tokio_threads=64
+# The number of worker threads for the Tokio async runtime.
+# Default: (Available CPU Cores * 2). 
+# Manual override is useful for high-performance tuning on dedicated hardware.
+tokio_threads = 32
 
-# Directory for logging. If not set, logging only to stdout
-# log_dir="log"
+# The Base Object Identifier (OID) used for security validation.
+# This acts as the root for interpreting client certificate extensions and JWT claims.
+# Private Enterprise Number (PEN)
+pki_base_oid = "1.3.6.1.4.1.65111"
 
+[oid_mapping]
+# Maps OID suffixes found in certificates/JWTs to internal application roles.
+# Format: "suffix" = "RoleName" (Roles: Admin, Operator, Viewer, Guest, ...)
+"1" = "Admin"
+"2" = "Operator"
+"3" = "Viewer"
+"4" = "Guest"
+
+# Directory path for persistent log files.
+# If commented out or omitted, the application will only log to Standard Output (stdout).
+# log_dir = "log"
+
+###############################################################################
+# SERVER INSTANCE DEFINITIONS
+# You can define multiple [[Server]] blocks to run several listeners simultaneously.
+###############################################################################
 
 [[Server]]
-#***************************************************************************
-#***************************************************************************
-#
+# =============================================================================
 # First Server
-# 
-#***************************************************************************
-#***************************************************************************
+# =============================================================================
 
-        ############################################################################
-        #
-        # Server Configuration
-        #
-        ############################################################################
-                # any name to identify server for logging, no further meaning
-                name = "router" 
+    # --- Network Configuration ---
+    # A unique name used for identifying this instance in logs and metrics.
+    name = "first_server" 
+    
+    # The network interface IP to bind to. 
+    # Use "0.0.0.0" to listen on all interfaces, or a specific local IP.
+    ip = "192.168.178.175"
+    
+    # The TCP port the server will listen on.
+    port = 1337
 
-                # ip and port the server is listening
-                # HOME
-                # ip = "192.168.178.26"
-                # HH
-                # ip="192.168.178.31"
-                ip="local"
-                port = 1337
+    # Master switch for this server instance.
+    enabled = true
 
-                # enable this server, defaults to false
-                enabled=true
+    # --- Protocol & Security ---
+    # 'http' or 'https'. If 'https' is used, [Server.server_certs] must be configured.
+    protocol = "https"
 
+    # Authentication method required for this server:
+    # "None"       - No auth (Public)
+    # "ClientCert" - Mutual TLS (mTLS). Requires [[Server.client_certs]]
+    # "JWT"        - JSON Web Token. Requires [Server.Layers.JWT]
+    authentication = "ClientCert"
 
-                # Protocol can be http or https
-                protocol = "https"
+    # The service type that handles the request after passing through layers:
+    # "Echo"   - Returns the request data as-is (Debug/Health checks)
+    # "Router" - Forwards requests to upstreams defined in [Server.ReverseRoutes]
+    service = "Echo"
 
-                # authentication method, can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
-                # authentication = "ClientCert"
-                # authentication = "JWT"
+    # --- Middleware Layers ---
+    # Defines the execution pipeline. Layers are executed in the order listed.
+    [Server.Layers]
+    # Options: "Timing", "Counter", "Logger", "Inspection", "JwtAuth", 
+    #          "ConcurrencyLimit", "RateLimiter:Simple", "RateLimiter:TokenBucket"
+    enabled = ["Decompression","MaxPayload", "Logger",  "Inspection",  "Compression", "AltSvc"] 
 
-                # the final service, can be Echo or Router, all others default to Echo
-                service = "Router"
-                #service = "Echo"
+    # --- Decompression Bomb Protection ---
+    [Server.Layers.Decompression]
+    max_decompressed_bytes = 10485760  # 10 MB limit
 
-                # the layers configured/enabled for this server
-                [Server.Layers]
-                # enabled = ["Counter", "Logger", "Timing", "Inspection"]
-                #enabled = ["Counter", "Logger", "Timing", "Inspection", "RateLimiter:Simple"]
-                enabled = ["ConcurrencyLimit"]
-                #enabled = []
+    # --- TLS: Server Identity (For HTTPS) ---
+    [Server.server_certs]
+    # Path to the public certificate (or full chain) in PEM format.
+    ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+    # Path to the unencrypted private key file in PEM format.
+    ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
-                # 
-                # Path to Server certificates in case of HTTPS
-                #
-                        [Server.server_certs]
-                        # path/to/fullchain_self.pem
-                        #ssl_certificate = "./server_certs/fullchain11.pem"
-                        # path/to/privkey_self.pem
-                        #ssl_certificate_key  = "./server_certs/privkey11.pem"
-                        ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-                        ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+    # --- TLS: Client Verification (For mTLS) ---
+    # This is an array of tables. You can trust multiple Certificate Authorities.
+    [[Server.client_certs]]
+    # Path to the CA certificate used to verify client certificates.
+    ssl_client_ca = "./client_certs/ca.cert.pem"
+    # Optional: Path to a Certificate Revocation List (CRL).
+    # ssl_client_crl = "./client_certs/ca.crl.pem"
 
-                # 
-                # Path to Client certificates in case of authentication = "ClientCert"
-                #
-                        # we can define multiple certificates, eg
-                        # but if we define a CRL, we can only have this ca, the ca without crl is not allowed or rejected
-                        #[[Server.client_certs]]
-                        # path/to/ca_cert.pem
-                        #ssl_client_ca   = "./client_certs/test2_crl/ca.cert.pem"
-                        # path/to/ca.crl.pem
-                        #ssl_crl="./client_certs/test2_crl/ca.crl.pem"
-                        [[Server.client_certs]]
-                        ssl_client_ca   = "./client_certs/test1_crl/ca.cert.pem"
-                        ssl_client_crl="./client_certs/test1_crl/ca.crl.pem"
+    # --- JWT Configuration ---
+    # Required only if authentication = "JWT" or "JwtAuth" is in layers.
+    [Server.Layers.JWT]
+    # LIST OF PATHS to public keys (PEM) used to verify JWT signatures.
+    jwt_public_keys = ["./jwt/public_key.pem"]
 
+    # --- Concurrency Management ---
+    [Server.Layers.ConcurrencyLimit]
+    # Maximum number of requests processed simultaneously by this server.
+    max_concurrent_requests = 64
 
-                #  
-                # Path to keys in case of authentication = "JWT"
-                # this can be a list of jwt_public_keys
-                #
-                        [Server.Layers.JWT]
-                        jwt_public_keys=["./jwt/public_key.pem"]
+    [Server.Layers.MaxPayload]
+    max_bytes = 55 #  10485760  # 10 MB Limit
 
-                #
-                # The Concorrency Layer
-                # parameter is number of max. concurrency requests
-                #
-                [Server.Layers.ConcurrencyLimit]
-                max_concurrent_requests = 10
+    # --- Reverse Proxy Routing ---
+    # Only active if service = "Router".
+    [Server.ReverseRoutes]
+    # Syntax: "/prefix" = { upstream = "host:port", allowed_roles = ["Role1", "Role2"] }
+    # Longest prefix matches first (e.g., "/help" is checked before "/").
+    "/help"   = { upstream = "192.168.178.175:1338", allowed_roles = ["Admin"] }
+    "/"       = { upstream = "192.168.178.175:1338", allowed_roles = ["Admin", "Operator"] }
+    "/static" = { upstream = "192.168.178.175:1338" } # Open to all authenticated users ("Guest")
 
-        ############################################################################
-        #
-        # REST ROUTING Layer
-        #
-        ############################################################################
-                # the reverse routes for the Router Service
-                [Server.ReverseRoutes]
-                "/help" = "192.168.178.26:1338"
-                "/" = "192.168.178.26:1338"
-                "/static" = "192.168.178.31:1339"
-                "/api" = "192.168.178.31:1330"
+    # --- Upstream Connection Parameters ---
+    [Server.RouterParams]
+    # Protocol the gateway uses to talk to the backend (upstream).
+    protocol = "https"
+    # Auth method the gateway uses to authenticate against the backend.
+    authentication = "mTLS"
+    # CA used by the gateway to verify the backend's identity.
+    ssl_root_certificate = "./server_certs/self_signed/myca.pem"
+    # Client certificate/key if the backend requires mTLS from the gateway.
+    ssl_client_certificate = "./client_certs/client.cert.pem"
+    ssl_client_key = "./client_certs/client.key.pem"
+    # Optional: path to a JWT file if the backend requires JWT auth.
+    # jwt = "./jwt/token.jwt"
 
-                # parameters for the Routing Layer
-                [Server.RouterParams]
-                # the protocol, the router client shall use (https or https)
-                protocol="http"
-                # the authentication method, the routers client should use
-                # can be ClientCert (mTLS) or JWT (JWT with HTTPS) or empty 
-                #authentication = "mTLS"
-                # root_ca for the client in router service
-                ssl_root_certificate = "./server_certs/self_signed/myca.pem"
-                # if router client shall use a jwt
-                # jwt   = "./jwt/public_key.pem"# The next server config
-                # if router client shall use client-cert
-                # ssl_client_certificate  = "./client_certs/test1_crl/client1.cert.pem"
-                # ssl_client_key="./client_certs/test1_crl/client1.key.pem"
+    # --- Rate Limiting: Simple ---
+    [Server.Layers.RateLimiter]
+    # Strict maximum requests per second allowed for this server.
+    requests_per_second = 500000
 
+    # --- Rate Limiting: Token Bucket ---
+    [Server.Layers.TokenBucketRateLimiter]
+    max_capacity = 15     # Maximum burst size (tokens)
+    refill = 8           # Number of tokens added per interval
+    duration_micros = 1000 # Refill interval in microseconds
 
+    # --- Artificial Latency ---
+    [Server.Layers.Delay]
+    # Delays every request by this amount. Useful for debugging or throttling.
+    delay_micros = 100
 
-        ############################################################################
-        #
-        # Simple Rate Limiter
-        #
-        ############################################################################
-                [Server.Layers.RateLimiter]
-                requests_per_second = 500000
+    # --- Inspection Layer (Whitelist Regex) ---
+    # Only requests matching these regex patterns will be passed to the service.
+    # Format: "PathPrefix" = ["Regex1", "Regex2"]
+    [Server.AllowedPathes.GET]
+    "/"     = ["^/?$", "^/\\?name=.*$"] # Allows root and root with name query
+    "/name" = ["^/name\\??id=\\d+$"]      # Allows /name only with numeric ID
 
-        ############################################################################
-        #
-        # Token Bucket Rate Limiter
-        #
-        ############################################################################
-                [Server.Layers.TokenBucketRateLimiter]
-                max_capacity = 15
-                refill = 8
-                duration_micros = 1000
+    [Server.AllowedPathes.POST]
+    "/address" = ["^/address\\??city=[a-zA-Z]+$"]
 
-        ############################################################################
-        #
-        # Delay Layer
-        #
-        ############################################################################
-                [Server.Layers.Delay]
-                delay_micros = 100
-
-        ############################################################################
-        #
-        # Inspection Layer
-        #
-        ############################################################################
-                # the (only) allowed pathes of the inspection layer
-                [Server.AllowedPathes.GET]
-                "/" = ["^/?$", "^/\\?name=.*$"]
-                "/help" = ["^/help\\??(topic=.*)?$"]
-                "/helpx" = ["^/helpx\\??(topic=.*)?$"]
-                "/name" = ["^/name\\??id=\\d+$"]
-
-                [Server.AllowedPathes.POST]
-                "/" = ["^/?$", "^/\\?id=\\d+$"]
-                "/name" = ["^/name\\??name=[a-zA-Z]+$"]
-                "/address" = ["^/address\\??city=[a-zA-Z]+$"]
-
-                [Server.AllowedPathes.PUT]
-                "/" = ["^/?$", "^/\\?id=\\d+$"]
+    [Server.AllowedPathes.PUT]
+    "/" = ["^/?$", "^/\\?id=\\d+$"]
 
 
 [[Server]]
-#***************************************************************************
-#***************************************************************************
-#
+# =============================================================================
 # Second Server
-# 
-#***************************************************************************
-#***************************************************************************
-
-            name = "base_service"
-            # HOME
-            ip = "192.168.178.26"
-            # HH
-            #ip="192.168.178.31"
+# =============================================================================
+            name = "scnd_server"
+            ip = "192.168.178.175"
             port = 1338
-            protocol = "http"
+            protocol = "https"
             service = "Echo"
-            enabled=true
+            enabled = true
+            authentication = "ClientCert"
 
-            # Path to Server certificates in case of HTTPS
+            [[Server.client_certs]]
+            ssl_client_ca = "./client_certs/ca.cert.pem"
+
             [Server.server_certs]
             ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key  = "./server_certs/self_signed/privkey_self.pem"
+            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
             [Server.Layers]
+            # Keeping layers empty for maximum throughput on the backend.
             enabled = []
 
             [Server.Layers.Delay]

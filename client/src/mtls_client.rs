@@ -1,13 +1,48 @@
+//! # mTLS Stress-Test Client
+//!
+//! A command-line HTTP(S) client designed for **load and throughput testing**
+//! against the server. It fires `N` total requests with a configurable
+//! concurrency window, using [`FuturesUnordered`] to keep up to `M` requests
+//! in flight simultaneously.
+//!
+//! ## Supported Authentication Modes
+//!
+//! | Flag | Mode | Notes |
+//! |------|------|-------|
+//! | `-s http` | Plain HTTP | No TLS |
+//! | `-s https` | HTTPS | Server-only TLS |
+//! | `-s jwt` | JWT bearer | Requires `-j <token file>` |
+//! | `-s mtls` | Mutual TLS | Requires `-c <cert>` and `-k <key>` |
+//!
+//! ## macOS Tuning
+//!
+//! For high-concurrency tests (> 10 000 requests), raise the file-descriptor
+//! limits **before** running the client:
+//!
+//! ```bash
+//! sudo sysctl -w kern.maxfiles=65536
+//! sudo sysctl -w kern.maxfilesperproc=65536
+//! ulimit -n 65536
+//! ```
+//!
+//! ## Example
+//!
+//! ```bash
+//! RUST_LOG=client=trace cargo run -p client --bin=client --release -- \
+//!   --ca ./server_certs/self_signed/myca.pem \
+//!   -c ./client_certs/test1_crl/client1.cert.pem \
+//!   -k ./client_certs/test1_crl/client1.key.pem \
+//!   -s mtls -i 65000 -p /
+//! ```
+
+// === Standard Library ===
 use std::time::Instant;
 
-use anyhow::Context;
-use anyhow::Error;
+// === External Crates ===
+use anyhow::{Context, Error};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
-
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
-
+use futures::{StreamExt, stream::FuturesUnordered};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
 use hyper_rustls::HttpsConnector;
@@ -15,20 +50,10 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
-
 use tracing::{error, trace};
 
+// === Internal Modules ===
 use common;
-
-// On MacOs:
-// sudo sysctl -w kern.maxfiles=65536
-// sudo sysctl -w kern.maxfilesperproc=65536
-// sudo ulimit -n 65536
-//
-// Example to run the client
-// RUST_LOG=client=trace cargo run -p client --bin=client -- --ca="./server_certs/self_signed/myca.pem" -p / -j ./jwt/token1.jwt -s jwt -i 800
-//
-// RUST_LOG=client=trace cargo run -p client --bin=client --release -- --ca="./server_certs/self_signed/myca.pem" -p / -c ./client_certs/test1_crl/client1.cert.pem -k ./client_certs/test1_crl/client1.key.pem  -s mtls -i 65000
 
 /// Entrypoint: parse CLI, validate, build client, and launch parallel requests.
 #[tokio::main]
@@ -177,6 +202,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .with_tls_config(client_config)
                 .https_or_http()
                 .enable_http1()
+                // .enable_http2() ???????????
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         }
@@ -187,6 +213,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .with_tls_config(tls_client_config)
                 .https_only()
                 .enable_http1()
+                .enable_http2()
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         }
@@ -201,6 +228,7 @@ fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>>
                 .with_tls_config(tls_client_config)
                 .https_only()
                 .enable_http1()
+                .enable_http2()
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         }

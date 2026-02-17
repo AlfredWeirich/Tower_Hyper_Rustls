@@ -10,7 +10,7 @@ SERVER_KEY="privkey_self.pem"
 SERVER_CSR="server.csr"
 SERVER_CERT="fullchain_self.pem"
 SERVER_DAYS=365
-CN_NAME="192.168.178.26"
+CN_NAME="192.168.178.175"
 SAN_DNS="localhost"
 SAN_IP="${CN_NAME}"
 # -------- END CONFIG -----------

@@ -1,554 +1,800 @@
-// configuration.rs
+//! # Server Configuration
+//!
+//! Defines the TOML-driven configuration model for the entire server
+//! application. The [`Config`] struct is the root, containing global settings
+//! and a list of [`ServerConfig`] instances — each describing one logical
+//! server (listener + middleware stack + base service).
+//!
+//! ## Configuration Lifecycle
+//!
+//! 1. **Read** – [`Config::init`] reads a TOML file from disk.
+//! 2. **Deserialize** – The file is parsed into the `Config` / `ServerConfig`
+//!    struct hierarchy via `serde` + `toml`.
+//! 3. **Finalize** – [`ServerConfig::finalize`] performs post-deserialization
+//!    setup: route parsing, regex compilation, and validation.
+//! 4. **Freeze** – The config is stored in a global [`OnceLock`] so that all
+//!    server tasks can borrow it with `'static` lifetime.
+//!
+//! ## Global Access
+//!
+//! After [`Config::init`] succeeds, any code can call [`Config::global()`] to
+//! obtain a `&'static Config` reference.
 
-use anyhow::Error;
+use anyhow::{Context, Error};
 use hyper::Uri;
-use local_ip_address::local_ip;
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::fs;
-use std::net::SocketAddr;
+use std::{collections::HashMap, fs, net::SocketAddr, sync::OnceLock};
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    #[serde(rename = "Server")]
-    pub servers: Vec<ServerConfig>,
-    pub tokio_threads: Option<usize>,
-    pub log_dir: Option<String>,
+/// The global singleton holder for the parsed configuration.
+///
+/// Initialised once by [`Config::init`] and then immutably borrowed for the
+/// lifetime of the process.
+static CONFIG: OnceLock<Config> = OnceLock::new();
+
+// ============================================================================
+//  Core Enums
+// ============================================================================
+
+/// Represents the different authorization levels for a user based on their
+/// mTLS certificate OIDs or JWT token claims.
+///
+/// The variant names match the TOML configuration (PascalCase) thanks to
+/// `#[serde(rename_all = "PascalCase")]`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "PascalCase")]
+pub enum UserRole {
+    /// Full access to all administrative endpoints.
+    Admin,
+    /// Partial access to operational endpoints.
+    Operator,
+    /// Read-only access to standard endpoints.
+    Viewer,
+    /// Default role for unidentified or low-privileged clients.
+    Guest,
 }
 
+/// The transport protocol for a server instance.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    /// Plain-text HTTP (no TLS). **Only for development / testing.**
+    #[default]
+    Http,
+    /// TLS-encrypted HTTPS (HTTP/1.1 + HTTP/2 + HTTP/3).
+    Https,
+}
+
+/// The base service type that sits at the bottom of the middleware stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+pub enum ServiceType {
+    /// A diagnostic echo service for load testing.
+    #[default]
+    Echo,
+    /// A reverse-proxy router with RBAC and URI rewriting.
+    Router,
+}
+
+/// How clients authenticate with this server instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+pub enum AuthenticationMethod {
+    /// No authentication required.
+    #[default]
+    #[serde(alias = "", alias = "None")]
+    None,
+    /// JWT bearer-token authentication.
+    #[serde(alias = "JWT")]
+    Jwt,
+    /// Mutual TLS (mTLS) — client must present a valid certificate.
+    #[serde(alias = "ClientCert", alias = "mTLS")]
+    ClientCert,
+}
+
+// ============================================================================
+//  Root Configuration
+// ============================================================================
+
+/// The root configuration structure for the server application.
+///
+/// Deserialized from a TOML file by [`Config::init`]. Holds global settings
+/// (OID mappings, Tokio threads, log directory) and a list of
+/// [`ServerConfig`] instances.
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    /// List of server configurations to be spawned.
+    #[serde(rename = "Server")]
+    pub servers: Vec<ServerConfig>,
+    /// Optional override for the number of Tokio worker threads.
+    /// Defaults to the number of logical CPUs if `None`.
+    pub tokio_threads: Option<usize>,
+    /// Directory where log files will be stored (if file logging is enabled).
+    pub log_dir: Option<String>,
+    /// The base OID prefix for custom PKI extensions
+    /// (e.g. `"2.25"` for UUID-based OIDs).
+    pub pki_base_oid: Option<String>,
+    /// Map of specific OID suffixes to [`UserRole`] variants for RBAC.
+    /// Example: `{"1" = "Admin", "2" = "Viewer"}`.
+    #[serde(default)]
+    pub oid_mapping: HashMap<String, UserRole>,
+    /// Pre-parsed integer representation of [`pki_base_oid`](Config::pki_base_oid).
+    /// Computed in [`Config::init`] for fast OID prefix matching in
+    /// [`extract_oids_from_cert`](crate::tls_conf::extract_oids_from_cert).
+    #[serde(skip)]
+    pub parsed_pki_base_oid: Option<Vec<u64>>,
+}
+
+// ============================================================================
+//  Per-Server Configuration
+// ============================================================================
+
+/// Configuration for a single server instance (one listener address).
+///
+/// Each `ServerConfig` produces one TCP listener (and optionally one UDP
+/// listener for HTTP/3). The middleware stack and base service are built from
+/// the fields defined here.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
+    /// Human-readable name used in all log/trace output.
     pub name: String,
+    /// IP address to bind to. The special value `"local"` resolves to the
+    /// machine's primary local IP at startup.
     pub ip: String,
+    /// TCP/UDP port to listen on.
     pub port: u16,
-    pub enabled: Option<bool>,
+    /// Whether this server instance should be started. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 
+    /// The base service type (Echo or Router).
     #[serde(default)]
     pub service: ServiceType,
-
+    /// Transport protocol (HTTP or HTTPS).
     #[serde(default)]
     pub protocol: Protocol,
-
+    /// Authentication method (None, JWT, or ClientCert/mTLS).
     #[serde(default)]
     pub authentication: AuthenticationMethod,
 
-    #[serde(rename = "server_certs")]
+    /// Server TLS certificate and key paths (required for HTTPS).
     pub server_certs: Option<ServerCertConfig>,
-
-    #[serde(rename = "client_certs")]
+    /// Client CA certificates for mTLS verification.
     pub client_certs: Option<Vec<ClientCertConfig>>,
 
+    /// Middleware layer configuration (names + per-layer settings).
     #[serde(rename = "Layers")]
     pub layers: Layers,
 
+    /// Optional regex-based allowed path rules for the Inspection layer.
     #[serde(rename = "AllowedPathes")]
     pub allowed_pathes: Option<AllowedPathes>,
 
+    /// Mapping of path prefixes to backend targets (Reverse Proxy logic).
     #[serde(rename = "ReverseRoutes")]
-    pub rev_routes: Option<HashMap<String, String>>,
+    pub rev_routes: Option<HashMap<String, RouteConfig>>,
 
+    /// Additional parameters for the Router service (upstream protocol,
+    /// auth settings, TLS for upstream connections).
     #[serde(rename = "RouterParams")]
     pub router_params: Option<RouterParams>,
 
+    /// Pre-parsed and sorted reverse-proxy routes. Computed in [`ServerConfig::finalize`].
     #[serde(skip)]
-    pub parsed_routes: Vec<(String, Uri)>,
+    pub parsed_routes: Vec<ParsedRoute>,
 
+    /// Pre-compiled regex patterns for the Inspection layer. Computed in
+    /// [`ServerConfig::finalize`].
     #[serde(skip)]
     pub compiled_allowed_pathes: Option<CompiledAllowedPathes>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Protocol {
-    Http,
-    Https,
-}
+// ============================================================================
+//  Supporting Structures
+// ============================================================================
 
-impl Default for Protocol {
-    fn default() -> Self {
-        Protocol::Http
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum ServiceType {
-    Echo,
-    Router,
-}
-
-impl Default for ServiceType {
-    fn default() -> Self {
-        ServiceType::Echo
-    }
-}
-impl ServiceType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ServiceType::Echo => "Echo",
-            ServiceType::Router => "Router",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum AuthenticationMethod {
-    #[serde(alias = "", alias = "None")]
-    None,
-    Jwt,
-    ClientCert,
-}
-
-impl Default for AuthenticationMethod {
-    fn default() -> Self {
-        AuthenticationMethod::None
-    }
-}
-
+/// A single reverse-proxy route definition from the TOML config.
 #[derive(Debug, Deserialize, Clone)]
-pub struct RouterParams {
-    pub protocol: Option<String>,
-    pub authentication: Option<String>,
-    pub ssl_root_certificate: Option<String>,
-    pub jwt: Option<String>,
-    pub ssl_client_certificate: Option<String>,
-    pub ssl_client_key: Option<String>,
+pub struct RouteConfig {
+    /// The upstream backend address (e.g. `"127.0.0.1:8080"`).
+    pub upstream: String,
+    /// Roles permitted to access this route. Empty means unrestricted.
+    #[serde(default)]
+    pub allowed_roles: Vec<UserRole>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ServerCertConfig {
-    pub ssl_certificate: String,
-    pub ssl_certificate_key: String,
+/// A processed reverse-proxy route ready for use by the router.
+///
+/// Created from [`RouteConfig`] during [`ServerConfig::finalize`].
+#[derive(Debug, Clone)]
+pub struct ParsedRoute {
+    /// The path prefix that triggers this route (e.g. `"/api"`).
+    pub prefix: String,
+    /// The fully qualified upstream URI (e.g. `https://127.0.0.1:8080`).
+    pub upstream_uri: Uri,
+    /// Roles permitted to access this route.
+    pub allowed_roles: Vec<UserRole>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ClientCertConfig {
-    pub ssl_client_ca: String,
-    pub ssl_client_crl: Option<String>,
+// --- Middleware Layer Structures ---
+
+/// Represents the various middleware layers that can be applied to a service.
+///
+/// Each variant corresponds to a string in the `[Layers].enabled` TOML list
+/// and may carry configuration data extracted from sibling TOML sections.
+#[derive(Debug, Clone)]
+pub enum MiddlewareLayer {
+    /// Tracks request/response timing.
+    Timing,
+    /// Counts the number of requests.
+    Counter,
+    /// Logs request and response details.
+    Logger,
+    /// Inspects request paths against allowed regex patterns.
+    Inspection,
+    /// Compresses response bodies.
+    Compression,
+    /// Decompresses request bodies (with max decompressed size limit in bytes).
+    Decompression(usize),
+    /// Limits the rate of incoming requests.
+    RateLimiter(RateLimiter),
+    /// Introduces a fixed delay (in microseconds) before processing requests.
+    Delay(u64),
+    /// Authenticates requests using JWT tokens (carries public key paths).
+    JwtAuth(Vec<String>),
+    /// Limits the number of concurrent requests.
+    ConcurrencyLimit(usize),
+    /// Limits the maximum size of request payloads (in bytes).
+    MaxPayload(usize),
+    /// Adds an Alt-Svc header to the response.
+    AltSvc,
 }
 
+/// Rate limiter algorithm selection.
+#[derive(Debug, Clone)]
+pub enum RateLimiter {
+    /// Fixed-window rate limiter.
+    Simple(SimpleRateLimiterConfig),
+    /// Token-bucket rate limiter.
+    TokenBucket(TokenBucketRateLimiterConfig),
+}
+
+/// Container for the ordered list of enabled layers and their per-layer
+/// configuration sections.
 #[derive(Debug, Deserialize, Clone)]
 pub struct Layers {
+    /// Ordered list of layer names. The order defines the middleware
+    /// wrapping order (first entry = outermost layer).
     pub enabled: Vec<String>,
-
+    /// Configuration for the [`MaxPayload`](MiddlewareLayer::MaxPayload) layer.
+    #[serde(rename = "MaxPayload")]
+    pub max_payload_config: Option<MaxPayloadConfig>,
+    /// Configuration for the [`Decompression`](MiddlewareLayer::Decompression) layer.
+    #[serde(rename = "Decompression")]
+    pub decompression_config: Option<DecompressionConfig>,
+    /// Configuration for the simple fixed-window rate limiter.
     #[serde(rename = "RateLimiter")]
     pub rate_limiter_config: Option<SimpleRateLimiterConfig>,
-
+    /// Configuration for the token-bucket rate limiter.
     #[serde(rename = "TokenBucketRateLimiter")]
     pub token_bucket_config: Option<TokenBucketRateLimiterConfig>,
-
+    /// Configuration for the [`Delay`](MiddlewareLayer::Delay) layer.
     #[serde(rename = "Delay")]
     pub delay_config: Option<DelayConfig>,
-
+    /// Configuration for the [`JwtAuth`](MiddlewareLayer::JwtAuth) layer.
     #[serde(rename = "JWT")]
     pub jwt_config: Option<JwtAuthConfig>,
-
+    /// Configuration for the [`ConcurrencyLimit`](MiddlewareLayer::ConcurrencyLimit) layer.
     #[serde(rename = "ConcurrencyLimit")]
     pub concurrency_limit_config: Option<ConcurrencyLimitConfig>,
 }
+
+// --- Helper Structures for Configuration ---
+
+/// Configuration for the maximum payload size enforcement layer.
 #[derive(Debug, Deserialize, Clone)]
-pub struct ConcurrencyLimitConfig {
-    pub max_concurrent_requests: usize,
+pub struct MaxPayloadConfig {
+    /// Maximum allowed request body size in bytes.
+    pub max_bytes: usize,
 }
 
+/// Configuration for the decompression layer's bomb protection.
 #[derive(Debug, Deserialize, Clone)]
-pub struct JwtAuthConfig {
-    pub jwt_public_keys: Vec<String>,
+pub struct DecompressionConfig {
+    /// Maximum allowed size of the decompressed request body in bytes.
+    pub max_decompressed_bytes: usize,
 }
 
+/// Parameters for the reverse-proxy router's upstream connections.
+///
+/// Controls how the router communicates with backend services (protocol,
+/// TLS settings, authentication).
+#[derive(Debug, Deserialize, Clone)]
+pub struct RouterParams {
+    /// Protocol for upstream connections (HTTP or HTTPS).
+    #[serde(default)]
+    pub protocol: Protocol,
+    /// Authentication method for upstream connections.
+    #[serde(default)]
+    pub authentication: AuthenticationMethod,
+    /// Path to the root CA certificate for verifying upstream TLS.
+    pub ssl_root_certificate: Option<String>,
+    /// Path to a JWT token file for upstream authentication.
+    pub jwt: Option<String>,
+    /// Path to the client certificate for upstream mTLS.
+    pub ssl_client_certificate: Option<String>,
+    /// Path to the client private key for upstream mTLS.
+    pub ssl_client_key: Option<String>,
+}
+
+/// Server TLS certificate and key paths.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ServerCertConfig {
+    /// Path to the PEM-encoded server certificate chain.
+    pub ssl_certificate: String,
+    /// Path to the PEM-encoded server private key.
+    pub ssl_certificate_key: String,
+}
+
+/// Client CA certificate configuration for mTLS.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClientCertConfig {
+    /// Path to the PEM-encoded client CA certificate.
+    pub ssl_client_ca: String,
+    /// Optional path to a PEM-encoded Certificate Revocation List.
+    pub ssl_client_crl: Option<String>,
+}
+
+/// Configuration for the simple fixed-window rate limiter.
 #[derive(Debug, Deserialize, Clone)]
 pub struct SimpleRateLimiterConfig {
+    /// Maximum number of requests per second.
     pub requests_per_second: u64,
 }
 
+/// Configuration for the token-bucket rate limiter.
 #[derive(Debug, Deserialize, Clone)]
 pub struct TokenBucketRateLimiterConfig {
+    /// Maximum number of tokens the bucket can hold.
     pub max_capacity: usize,
+    /// Number of tokens added per refill interval.
     pub refill: usize,
+    /// Refill interval in microseconds.
     pub duration_micros: u64,
 }
 
+/// Configuration for the artificial delay layer.
 #[derive(Debug, Deserialize, Clone)]
 pub struct DelayConfig {
+    /// Delay duration in microseconds.
     pub delay_micros: u64,
 }
 
+/// Configuration for the JWT authentication layer.
+#[derive(Debug, Deserialize, Clone)]
+pub struct JwtAuthConfig {
+    /// List of file paths to PEM-encoded Ed25519 public keys.
+    pub jwt_public_keys: Vec<String>,
+}
+
+/// Configuration for the concurrency limit layer.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConcurrencyLimitConfig {
+    /// Maximum number of in-flight requests.
+    pub max_concurrent_requests: usize,
+}
+
+/// Raw deserialized allowed-path rules (per HTTP method).
+///
+/// Each method maps a base path (e.g. `"/api"`) to a list of regex pattern
+/// strings. These are compiled into [`CompiledAllowedPathes`] during
+/// [`ServerConfig::finalize`].
 #[derive(Debug, Deserialize, Clone)]
 pub struct AllowedPathes {
+    /// Allowed GET path patterns.
     #[serde(rename = "GET")]
     pub get: Option<HashMap<String, Vec<String>>>,
+    /// Allowed POST path patterns.
     #[serde(rename = "POST")]
     pub post: Option<HashMap<String, Vec<String>>>,
+    /// Allowed PUT path patterns.
     #[serde(rename = "PUT")]
     pub put: Option<HashMap<String, Vec<String>>>,
+    /// Allowed DELETE path patterns.
     #[serde(rename = "DELETE")]
     pub delete: Option<HashMap<String, Vec<String>>>,
 }
 
+/// Pre-compiled regex patterns for path inspection.
+///
+/// Created from [`AllowedPathes`] during [`ServerConfig::finalize`].
+/// Used by the [`InspectionService`](crate::middleware::inspection::InspectionService)
+/// at runtime for zero-allocation path matching.
 #[derive(Debug, Clone)]
 pub struct CompiledAllowedPathes {
+    /// Compiled regex rules for GET requests.
     pub get: HashMap<String, Vec<Regex>>,
+    /// Compiled regex rules for POST requests.
     pub post: HashMap<String, Vec<Regex>>,
+    /// Compiled regex rules for PUT requests.
     pub put: HashMap<String, Vec<Regex>>,
+    /// Compiled regex rules for DELETE requests.
     pub delete: HashMap<String, Vec<Regex>>,
 }
 
+/// Helper to provide `true` as the default value for `serde`.
+fn default_true() -> bool {
+    true
+}
+
+// ============================================================================
+//  Implementations
+// ============================================================================
+
+impl Config {
+    /// Initializes the global configuration from a TOML file.
+    ///
+    /// This is the primary entry point for configuration loading. It performs:
+    ///
+    /// 1. **Read** the TOML file from `config_file`.
+    /// 2. **Deserialize** into the `Config` struct hierarchy.
+    /// 3. **Pre-compute** the OID base vector for fast certificate matching.
+    /// 4. **Finalize** each [`ServerConfig`] (route parsing, regex compilation,
+    ///    validation).
+    /// 5. **Freeze** the config into the global [`OnceLock`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, TOML parsing fails, or
+    /// any server's [`finalize`](ServerConfig::finalize) step detects invalid
+    /// configuration.
+    pub fn init(config_file: &str) -> Result<&'static Config, Error> {
+        // 1. Read the raw TOML string
+        let toml_str = fs::read_to_string(config_file)
+            .with_context(|| format!("Failed to read config file: {}", config_file))?;
+
+        // 2. Deserialize into our Config struct
+        let mut config: Config =
+            toml::from_str(&toml_str).context("Failed to parse TOML configuration")?;
+
+        // 3. Pre-compute the OID Vector (Optimization for Hot Path)
+        // We parse the dot-notation string (e.g. "1.2.840.113549") into u64 integers.
+        // We use u64 to support UUID-based OIDs (arc 2.25).
+        if let Some(ref oid_str) = config.pki_base_oid {
+            let parsed: Vec<u64> = oid_str
+                .split('.')
+                .map(|s| {
+                    s.parse::<u64>()
+                        .with_context(|| format!("Invalid OID component in config: '{}'", s))
+                })
+                .collect::<Result<Vec<u64>, Error>>()?;
+
+            // Store the optimized vector
+            config.parsed_pki_base_oid = Some(parsed);
+        }
+
+        // 4. Finalize individual server settings (e.g. compile regexes)
+        for server in config.servers.iter_mut() {
+            server.finalize()?;
+        }
+
+        // 5. Store in global OnceLock
+        // We use .set(). If it returns Err, it means init() was called twice,
+        // which is usually fine to ignore (we just return the existing global).
+        if CONFIG.set(config).is_err() {
+            tracing::warn!("Config::init called multiple times. Using existing configuration.");
+        }
+
+        // 6. Return reference to the global singleton
+        Ok(Self::global())
+    }
+
+    /// Returns a `'static` reference to the global configuration singleton.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Config::init`] has not been called yet.
+    pub fn global() -> &'static Config {
+        CONFIG
+            .get()
+            .expect("Configuration not initialized - check if Config::init was called in main")
+    }
+
+    /// Maps a client-provided OID suffix to an internal [`UserRole`].
+    ///
+    /// Falls back to [`UserRole::Guest`] if the suffix is not in the
+    /// [`oid_mapping`](Config::oid_mapping) table.
+    pub fn map_oid_to_role(&self, suffix: &str) -> UserRole {
+        // suffix is for example "1" or "2"
+        self.oid_mapping
+            .get(suffix)
+            .copied()
+            .unwrap_or(UserRole::Guest)
+    }
+}
+
 impl ServerConfig {
+    /// Finalizes the server configuration by preparing internal state.
+    ///
+    /// Performs the following steps:
+    ///
+    /// 1. Parses raw reverse-route strings into [`ParsedRoute`] objects.
+    /// 2. Compiles allowed-path regex patterns.
+    /// 3. **Validates** the middleware layer names (catches typos early).
+    /// 4. **Validates** HTTPS requirements (certificate presence).
+    /// 5. **Validates** authentication requirements (JWT keys, mTLS certs).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on any validation failure, with a message identifying
+    /// the offending server by name.
+    pub fn finalize(&mut self) -> Result<(), Error> {
+        self.init_parsed_routes()?;
+        self.init_compiled_allowed_pathes()?;
+        // === VALIDATION STEP ===
+        // We attempt to build the layers here. If there is a typo (e.g. "Decompressionx")
+        // or a missing config section, this will return an Error immediately.
+        // We discard the result ('let _') because we only care if it fails.
+        let _ = self
+            .layers
+            .build_middleware_layers()
+            .with_context(|| format!("Configuration error in Server '{}'", self.name))?;
+        // 3. === VALIDATION: HTTPS Requirements ===
+        if self.protocol == Protocol::Https {
+            // If Protocol is HTTPS, server_certs MUST be present
+            if self.server_certs.is_none() {
+                return Err(Error::msg(format!(
+                    "Configuration error in Server '{}': Protocol is 'https' but [Server.server_certs] (ssl_certificate/key) is missing.",
+                    self.name
+                )));
+            }
+        }
+        // 4. Validate Authentication Requirements
+        match self.authentication {
+            AuthenticationMethod::ClientCert => {
+                if self.client_certs.is_none() {
+                    return Err(Error::msg(format!(
+                        "Configuration error in Server '{}': Authentication is 'ClientCert' (mTLS), but [[Server.client_certs]] is missing.",
+                        self.name
+                    )));
+                }
+            }
+            AuthenticationMethod::Jwt => {
+                // A. Check if the Config Block exists
+                let jwt_cfg = self.layers.jwt_config.as_ref().ok_or_else(|| {
+                    Error::msg(format!(
+                        "Configuration error in Server '{}': Authentication is 'JWT', but [Server.Layers.JWT] config section is missing.",
+                        self.name
+                    ))
+                })?;
+
+                // B. Check if keys are actually provided
+                if jwt_cfg.jwt_public_keys.is_empty() {
+                    return Err(Error::msg(format!(
+                        "Configuration error in Server '{}': Authentication is 'JWT', but 'jwt_public_keys' list is empty.",
+                        self.name
+                    )));
+                }
+
+                // C. Check if the Layer is actually enabled in the list
+                // We accept both "JwtAuth" (Internal name) and "JWT" (Alias)
+                let layer_enabled =
+                    self.layers.enabled.iter().any(|l| {
+                        l.eq_ignore_ascii_case("JwtAuth") || l.eq_ignore_ascii_case("JWT")
+                    });
+
+                if !layer_enabled {
+                    return Err(Error::msg(format!(
+                        "Configuration error in Server '{}': Authentication is 'JWT', but the 'JwtAuth' layer is NOT in [Server.Layers.enabled]. You must enable the layer to perform the check.",
+                        self.name
+                    )));
+                }
+            }
+            AuthenticationMethod::None => {
+                // No specific config required for None
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the socket address computed from the IP and port configuration.
+    ///
+    /// The special IP value `"local"` resolves to the machine's primary
+    /// local IP address at runtime.
     pub fn get_server_ip(&self) -> Result<SocketAddr, Error> {
         let ip_str = if self.ip == "local" {
-            local_ip()?.to_string()
+            local_ip_address::local_ip()?.to_string()
         } else {
             self.ip.clone()
         };
-        let addr = format!("{}:{}", ip_str, self.port);
-        addr.parse()
-            .map_err(|e| Error::msg(format!("Invalid server address: {e}")))
+        format!("{}:{}", ip_str, self.port)
+            .parse()
+            .with_context(|| format!("Invalid address: {}:{}", ip_str, self.port))
     }
 
-    pub fn use_tls(&self) -> bool {
-        self.protocol == Protocol::Https
-    }
-
-    pub fn use_client_cert_auth(&self) -> bool {
-        self.authentication == AuthenticationMethod::ClientCert
-    }
-
-    pub fn init_compiled_allowed_pathes(&mut self) -> Result<(), Error> {
-        self.compiled_allowed_pathes = Some(CompiledAllowedPathes::from_raw(&self.allowed_pathes)?);
-        Ok(())
-    }
-
-    pub fn normalize_router_protocol(&mut self) {
-        if let Some(params) = self.router_params.as_mut() {
-            match params.protocol.as_deref() {
-                Some("http") | Some("https") => {}
-                Some(other) => {
-                    tracing::warn!(
-                        "Server '{}': Invalid router protocol '{}', defaulting to 'http'",
-                        self.name,
-                        other
-                    );
-                    params.protocol = Some("http".to_string());
-                }
-                None => {
-                    params.protocol = Some("http".to_string());
-                }
-            }
-        }
-    }
-
-    pub fn validate_and_normalize_router(&mut self) -> Result<(), Error> {
-        if self.service == ServiceType::Router {
-            let params = self.router_params.as_ref().ok_or_else(|| {
-                Error::msg(format!(
-                    "Server '{}' uses service = 'Router' but [RouterParams] is missing",
-                    self.name
-                ))
-            })?;
-
-            let protocol = params.protocol.as_deref().unwrap_or("http").to_lowercase();
-
-            if protocol != "http" && protocol != "https" {
-                return Err(Error::msg(format!(
-                    "Server '{}': invalid protocol '{}'. Must be 'http' or 'https'",
-                    self.name, protocol
-                )));
-            }
-
-            if protocol == "https" && params.ssl_root_certificate.is_none() {
-                return Err(Error::msg(format!(
-                    "Server '{}': protocol is 'https' but [RouterParams.ssl_root_certificate] is missing",
-                    self.name
-                )));
-            }
-
-            match params
-                .authentication
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase()
-                .as_str()
-            {
-                "" => {}
-                "jwt" => {
-                    if protocol != "https" {
-                        return Err(Error::msg(format!(
-                            "Server '{}': JWT authentication requires 'https' protocol",
-                            self.name
-                        )));
-                    }
-                    if params.jwt.is_none() {
-                        return Err(Error::msg(format!(
-                            "Server '{}': JWT authentication requires [RouterParams.jwt]",
-                            self.name
-                        )));
-                    }
-                }
-                "mtls" => {
-                    if protocol != "https" {
-                        return Err(Error::msg(format!(
-                            "Server '{}': mTLS authentication requires 'https' protocol",
-                            self.name
-                        )));
-                    }
-                    if params.ssl_client_certificate.is_none() || params.ssl_client_key.is_none() {
-                        return Err(Error::msg(format!(
-                            "Server '{}': mTLS requires [ssl_client_certificate] and [ssl_client_key]",
-                            self.name
-                        )));
-                    }
-                }
-                other => {
-                    return Err(Error::msg(format!(
-                        "Server '{}': unknown authentication method '{}'. Use '', 'JWT' or 'mTLS'",
-                        self.name, other
-                    )));
-                }
-            }
-
-            self.normalize_router_protocol();
-        }
-        Ok(())
-    }
-
+    /// Parses the raw reverse route configuration into structured [`ParsedRoute`] objects.
+    ///
+    /// Routes are sorted by prefix length (longest first) so that the most
+    /// specific prefix wins during matching.
     pub fn init_parsed_routes(&mut self) -> Result<(), Error> {
-        let mut rules_vec = match &self.rev_routes {
-            Some(map) => {
-                let proto = self
-                    .router_params
-                    .as_ref()
-                    .and_then(|p| p.protocol.as_deref())
-                    .unwrap_or("http");
+        let mut rules = Vec::new();
+        if let Some(map) = &self.rev_routes {
+            // Determine the upstream protocol from RouterParams (defaults to HTTP).
+            let proto = self
+                .router_params
+                .as_ref()
+                .map(|p| p.protocol)
+                .unwrap_or_default();
+            let proto_str = match proto {
+                Protocol::Https => "https",
+                Protocol::Http => "http",
+            };
 
-                map.iter()
-                    .filter_map(|(prefix, host_port)| {
-                        let full_uri = format!("{proto}://{host_port}");
-                        match full_uri.parse::<Uri>() {
-                            Ok(uri) => Some((prefix.clone(), uri)),
-                            Err(e) => {
-                                tracing::warn!("{}: Invalid URI ({}): {}", self.name, full_uri, e);
-                                None
-                            }
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            }
-            None => Vec::new(),
-        };
+            for (prefix, cfg) in map {
+                let uri = format!("{proto_str}://{}", cfg.upstream)
+                    .parse::<Uri>()
+                    .with_context(|| format!("Invalid upstream URI: {}", cfg.upstream))?;
 
-        rules_vec.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
-        self.parsed_routes = rules_vec;
-        Ok(())
-    }
-
-    pub fn finalize(&mut self) -> Result<(), Error> {
-        self.validate_and_normalize_router()?;
-        self.init_compiled_allowed_pathes()?;
-        self.init_parsed_routes()?;
-        self.validate_tls_requirements()?;
-        self.validate_auth_requirements()?;
-        Ok(())
-    }
-
-    fn validate_tls_requirements(&self) -> Result<(), Error> {
-        if self.use_tls() && self.server_certs.is_none() {
-            return Err(Error::msg(format!(
-                "Server '{}' uses HTTPS but [server_certs] is missing",
-                self.name
-            )));
-        }
-        Ok(())
-    }
-
-    fn validate_auth_requirements(&self) -> Result<(), Error> {
-        match self.authentication {
-            AuthenticationMethod::Jwt => {
-                let jwt = self.layers.jwt_config.as_ref();
-                if jwt.is_none() || jwt.unwrap().jwt_public_keys.is_empty() {
-                    return Err(Error::msg(format!(
-                        "Server '{}' uses JWT but [Layers.JWT] is missing or empty",
-                        self.name
-                    )));
-                }
-
-                let jwt_enabled = self.layers.enabled.iter().any(|layer| {
-                    layer.eq_ignore_ascii_case("JwtAuth") || layer.eq_ignore_ascii_case("JWT")
+                rules.push(ParsedRoute {
+                    prefix: prefix.clone(),
+                    upstream_uri: uri,
+                    allowed_roles: cfg.allowed_roles.clone(),
                 });
-
-                if !jwt_enabled {
-                    return Err(Error::msg(format!(
-                        "Server '{}' uses JWT authentication but 'JwtAuth' is not in the [Layers.enabled] list",
-                        self.name
-                    )));
-                }
             }
-            AuthenticationMethod::ClientCert => {
-                if self.client_certs.as_ref().map_or(true, |v| v.is_empty()) {
-                    return Err(Error::msg(format!(
-                        "Server '{}' uses ClientCert but [[client_certs]] is missing or empty",
-                        self.name
-                    )));
-                }
-            }
-            _ => {}
         }
+        // Sort by descending prefix length for longest-prefix-first matching.
+        rules.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        self.parsed_routes = rules;
+        Ok(())
+    }
+
+    /// Compiles the raw allowed path patterns into [`CompiledAllowedPathes`].
+    ///
+    /// If no allowed paths are configured, creates an empty default (which
+    /// means the Inspection layer will block everything).
+    pub fn init_compiled_allowed_pathes(&mut self) -> Result<(), Error> {
+        // If allowed_pathes is missing in TOML, we create an empty default object
+        let raw = self.allowed_pathes.clone().unwrap_or(AllowedPathes {
+            get: None,
+            post: None,
+            put: None,
+            delete: None,
+        });
+
+        // Compile (creates empty HashMaps if None)
+        self.compiled_allowed_pathes = Some(CompiledAllowedPathes::from_raw(&raw)?);
         Ok(())
     }
 }
 
 impl CompiledAllowedPathes {
-    pub fn from_raw(routes: &Option<AllowedPathes>) -> Result<Self, Error> {
-        fn compile(
-            map: &Option<HashMap<String, Vec<String>>>,
-        ) -> Result<HashMap<String, Vec<Regex>>, Error> {
+    /// Compiles raw string patterns from [`AllowedPathes`] into [`Regex`] objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any regex pattern is invalid.
+    pub fn from_raw(raw: &AllowedPathes) -> Result<Self, Error> {
+        let compile_map = |opt_map: &Option<HashMap<String, Vec<String>>>| -> Result<HashMap<String, Vec<Regex>>, Error> {
             let mut compiled = HashMap::new();
-            if let Some(map) = map {
-                for (k, patterns) in map {
-                    let regexes = patterns
-                        .iter()
-                        .map(|p| {
-                            Regex::new(p).map_err(|e| Error::msg(format!("Invalid regex: {e}")))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    compiled.insert(k.clone(), regexes);
+            if let Some(map) = opt_map {
+                for (path, patterns) in map {
+                    let regexes: Result<Vec<_>, _> = patterns.iter().map(|p| Regex::new(p)).collect();
+                    compiled.insert(path.clone(), regexes.map_err(|e| Error::msg(format!("Regex error: {e}")))?);
                 }
             }
             Ok(compiled)
-        }
+        };
 
         Ok(Self {
-            get: compile(&routes.as_ref().and_then(|r| r.get.clone()))?,
-            post: compile(&routes.as_ref().and_then(|r| r.post.clone()))?,
-            put: compile(&routes.as_ref().and_then(|r| r.put.clone()))?,
-            delete: compile(&routes.as_ref().and_then(|r| r.delete.clone()))?,
+            get: compile_map(&raw.get)?,
+            post: compile_map(&raw.post)?,
+            put: compile_map(&raw.put)?,
+            delete: compile_map(&raw.delete)?,
         })
     }
 
+    /// Checks whether a `(method, path, query)` triple matches the allowed rules.
+    ///
+    /// The full path (including query string if present) is tested against every
+    /// regex pattern registered for the given method and base path.
+    ///
+    /// Returns `false` for unrecognised HTTP methods or for paths that have no
+    /// matching regex rules.
     pub fn is_allowed(&self, method: &str, path: &str, query: &str) -> bool {
+        // We assemble the full path for check,
+        // if a query string exists (matching your regex definitions).
         let full_path = if query.is_empty() {
             path.to_string()
         } else {
-            format!("{path}?{query}")
+            format!("{}?{}", path, query)
         };
 
+        // Selection of the correct map based on the HTTP method
         let map = match method {
             "GET" => &self.get,
             "POST" => &self.post,
             "PUT" => &self.put,
             "DELETE" => &self.delete,
-            _ => return false,
+            _ => return false, // Other methods are not allowed by default
         };
 
-        map.get(path)
-            .map(|regexes| regexes.iter().any(|r| r.is_match(&full_path)))
-            .unwrap_or(false)
-    }
-}
-
-pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
-    let toml_str = fs::read_to_string(config_file)?;
-    let mut config: Config = toml::from_str(&toml_str)?;
-
-    for server in config.servers.iter_mut() {
-        server.finalize()?;
-    }
-
-    config.set_static_config();
-    Ok(Config::get_static_config())
-}
-
-static mut STAT_CONFIG: *const Config = std::ptr::null();
-
-impl Config {
-    fn set_static_config(self) {
-        unsafe {
-            STAT_CONFIG = Box::into_raw(Box::new(self));
+        // Check: are there regex rules for this base path (e.g. "/help")?
+        if let Some(regex_list) = map.get(path) {
+            // If so: does at least one of the rules match the full_path?
+            regex_list.iter().any(|re| re.is_match(&full_path))
+        } else {
+            false
         }
     }
-
-    fn get_static_config() -> &'static Config {
-        unsafe { &*STAT_CONFIG }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum MiddlewareLayer {
-    Timing,
-    Counter,
-    Logger,
-    RateLimiter(RateLimiter),
-    Delay(DelayConfig),
-    Inspection,
-    JwtAuth(Vec<String>),
-    ConcurrencyLimit(ConcurrencyLimitConfig),
-}
-
-#[derive(Debug, Clone)]
-pub enum RateLimiter {
-    Simple(SimpleRateLimiterConfig),
-    TokenBucket(TokenBucketRateLimiterConfig),
-}
-
-pub enum RateLimiterType {
-    Simple,
-    TokenBucket,
 }
 
 impl Layers {
+    /// Maps the enabled layer names to their corresponding [`MiddlewareLayer`] variants.
+    ///
+    /// Each string in [`Layers::enabled`] is matched against known layer names.
+    /// Layers that require configuration (e.g. `"MaxPayload"`, `"Delay"`) look up
+    /// their sibling TOML section and fail with a descriptive error if it is missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an unknown layer name is encountered or if a required
+    /// configuration section is absent.
     pub fn build_middleware_layers(&self) -> Result<Vec<MiddlewareLayer>, Error> {
-        let mut result = Vec::with_capacity(10);
-
-        for layer in &self.enabled {
-            match layer.as_str() {
-                "Timing" => result.push(MiddlewareLayer::Timing),
-                "Counter" => result.push(MiddlewareLayer::Counter),
-                "Logger" => result.push(MiddlewareLayer::Logger),
-                "Delay" => {
-                    let cfg = self
-                        .delay_config
-                        .as_ref()
-                        .ok_or_else(|| Error::msg("Missing [Layers.Delay]"))?;
-                    result.push(MiddlewareLayer::Delay(cfg.clone()));
-                }
-                "Inspection" => result.push(MiddlewareLayer::Inspection),
-                "JwtAuth" | "JWT" => {
-                    let cfg = self
-                        .jwt_config
-                        .as_ref()
-                        .ok_or_else(|| Error::msg("Missing [Layers.JWT]"))?;
-                    result.push(MiddlewareLayer::JwtAuth(cfg.jwt_public_keys.clone()));
-                }
-                s if s == "RateLimiter:Simple" => {
-                    let cfg = self
-                        .rate_limiter_config
-                        .as_ref()
-                        .ok_or_else(|| Error::msg("Missing [Layers.RateLimiter]"))?;
-                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::Simple(
-                        cfg.clone(),
-                    )));
-                }
-                s if s == "RateLimiter:TokenBucket" => {
-                    let cfg = self
-                        .token_bucket_config
-                        .as_ref()
-                        .ok_or_else(|| Error::msg("Missing [Layers.TokenBucketRateLimiter]"))?;
-                    result.push(MiddlewareLayer::RateLimiter(RateLimiter::TokenBucket(
-                        cfg.clone(),
-                    )));
-                }
-                "ConcurrencyLimit" => {
-                    let cfg = self
-                        .concurrency_limit_config
-                        .as_ref()
-                        .ok_or_else(|| Error::msg("Missing [Layers.ConcurrencyLimit]"))?;
-                    result.push(MiddlewareLayer::ConcurrencyLimit(cfg.clone()));
-                }
-                other => return Err(Error::msg(format!("Unknown layer type: {}", other))),
-            }
-        }
-
-        Ok(result)
+        self.enabled
+            .iter()
+            .map(|name| match name.as_str() {
+                // New case for MaxPayload
+                "MaxPayload" => self
+                    .max_payload_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::MaxPayload(c.max_bytes))
+                    .context("Layer 'MaxPayload' enabled but [Server.Layers.MaxPayload] section is missing"),
+                "Timing" => Ok(MiddlewareLayer::Timing),
+                "Counter" => Ok(MiddlewareLayer::Counter),
+                "Logger" => Ok(MiddlewareLayer::Logger),
+                "Inspection" => Ok(MiddlewareLayer::Inspection),
+                "Compression" => Ok(MiddlewareLayer::Compression),
+                "Decompression" => self
+                    .decompression_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::Decompression(c.max_decompressed_bytes))
+                    .context("Layer 'Decompression' enabled but [Server.Layers.Decompression] section is missing"),
+                "Delay" => self
+                    .delay_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::Delay(c.delay_micros))
+                    .context("Missing [Layers.Delay]"),
+                "JwtAuth" | "JWT" => self
+                    .jwt_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::JwtAuth(c.jwt_public_keys.clone()))
+                    .context("Missing [Layers.JWT]"),
+                "ConcurrencyLimit" => self
+                    .concurrency_limit_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::ConcurrencyLimit(c.max_concurrent_requests))
+                    .context("Missing [Layers.ConcurrencyLimit]"),
+                "RateLimiter:Simple" => self
+                    .rate_limiter_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::RateLimiter(RateLimiter::Simple(c.clone())))
+                    .context("Missing [Layers.RateLimiter]"),
+                "RateLimiter:TokenBucket" => self
+                    .token_bucket_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::RateLimiter(RateLimiter::TokenBucket(c.clone())))
+                    .context("Missing [Layers.TokenBucketRateLimiter]"),
+                "AltSvc" => Ok(MiddlewareLayer::AltSvc),
+                other => Err(Error::msg(format!("Unknown layer type: {}", other))),
+            })
+            .collect()
     }
+}
+
+// --- Helper function for Main (Backward Compatibility) ---
+
+/// Convenience wrapper around [`Config::init`].
+///
+/// Provided for backward compatibility with older calling code in `main()`.
+pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
+    Config::init(config_file)
 }

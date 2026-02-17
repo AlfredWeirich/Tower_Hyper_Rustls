@@ -1,23 +1,49 @@
-use bytes::Bytes;
-#[cfg(feature = "boxed_body")]
-use http_body_util::BodyExt;
-use http_body_util::Full;
-use hyper::{Request, Response, StatusCode};
+//! # Path Inspection Middleware (Allow-List)
+//!
+//! This middleware acts as a lightweight WAF (Web Application Firewall) by
+//! checking every incoming request's `(method, path, query)` triple against a
+//! set of compiled regular expressions. If the request does **not** match any
+//! allowed pattern, it is rejected immediately with a **403 Forbidden**
+//! response, and a warning is logged.
+//!
+//! ## Performance Notes
+//!
+//! * On the **happy path** (request allowed), no heap allocations are
+//!   performed — the method, path, and query are borrowed as `&str` directly
+//!   from the request.
+//! * On the **reject path**, strings are only allocated for the warning log
+//!   line.
+//! * A blocked request never reaches the inner service, saving downstream
+//!   compute.
+
+// === Standard Library ===
 use std::{
-    future::Future,
+    future::{Future, ready},
     pin::Pin,
     task::{Context, Poll},
 };
+
+// === External Crates ===
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
-use crate::configuration::CompiledAllowedPathes; // Adjust to your module path
+// === Internal Modules ===
+use crate::{ServiceRespBody, SrvError, configuration::CompiledAllowedPathes};
 
-#[cfg(feature = "boxed_body")]
-use server::SrvError;
-
+/// A Tower [`Layer`] that inspects request paths against a set of regex rules.
+///
+/// If a path does not match any allowed prefix, a 403 Forbidden response is returned.
+///
+/// The compiled regex set is stored with `'static` lifetime because it is
+/// owned by the global configuration and outlives all connections.
 #[derive(Clone)]
 pub struct InspectionLayer {
+    /// Pre-compiled regex rules. Borrowed from the global configuration with
+    /// a `'static` lifetime.
     rules: &'static CompiledAllowedPathes,
+    /// Server name label for logging.
     server_name: &'static str,
 }
 
@@ -43,67 +69,99 @@ impl<S> Layer<S> for InspectionLayer {
     }
 }
 
+/// Middleware service that enforces the path allow-list.
+///
+/// On each request it calls
+/// [`CompiledAllowedPathes::is_allowed`](crate::configuration::CompiledAllowedPathes::is_allowed)
+/// to check the `(method, path, query)` triple. Allowed requests are forwarded
+/// to the inner service; rejected requests receive an immediate 403.
 #[derive(Clone)]
 pub struct InspectionService<S> {
+    /// The next service in the middleware chain.
     inner: S,
+    /// The compiled regex set for allow-list matching.
     allowed_pathes: &'static CompiledAllowedPathes,
+    /// Server name label for logging.
     server_name: &'static str,
 }
 
-use server::ServiceRespBody;
 impl<S, ReqBody> Service<Request<ReqBody>> for InspectionService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ServiceRespBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
+    S::Error: Send + 'static,
     ReqBody: Send + 'static,
 {
     type Response = Response<ServiceRespBody>;
     type Error = S::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
+    /// Delegates back-pressure to the inner service.
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
+    /// Checks the request against the allow-list, forwarding or rejecting it.
+    ///
+    /// ## Allowed requests
+    ///
+    /// Clones the inner service (required by Tower's ownership model) and
+    /// forwards the request.
+    ///
+    /// ## Blocked requests
+    ///
+    /// Logs a warning and returns an immediate 403 via [`std::future::ready`],
+    /// which is more efficient than spawning an `async` block for a value
+    /// that is already available.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        // Extracts the method, path, and query string.
-        // Check if the request is allowed via the is_allowed function.
-        let method = req.method().as_str().to_uppercase();
-        let uri = req.uri().clone();
-        let path = uri.path().to_string();
-        let query = uri.query().unwrap_or("").to_string();
-        let allow = self.allowed_pathes.is_allowed(&method, &path, &query);
+        // --- OPTIMIZATION: Avoid .to_string() and .clone() ---
+        // We use &str directly from the request to avoid heap allocations.
         let server_name = self.server_name;
+        tracing::trace!("{}: Inspection", server_name);
+        let method = req.method().as_str();
+        let path = req.uri().path();
+        let query = req.uri().query().unwrap_or("");
+
+        // Pass references to your regex checker
+        let allow = self.allowed_pathes.is_allowed(method, path, query);
 
         if allow {
-            // If the request matches one of the allowed regex patterns
             let mut inner = self.inner.clone();
             Box::pin(async move { inner.call(req).await })
         } else {
-            // if not allowed:
-            // Log the blocked attempt.
-            // Return a 403 Forbidden response with a simple body.
+            // Log the failure (Captured variables for the log)
+            let method_owned = method.to_string(); // Only allocate if we actually block
+            let path_owned = path.to_string();
+            let query_owned = query.to_string();
+
             tracing::warn!(
+                target: "inspection",
                 "{}: Blocked request: {} {}?{}",
-                server_name,
-                method,
-                path,
-                query
+                server_name, method_owned, path_owned, query_owned
             );
 
-            #[cfg(feature = "boxed_body")]
-            let body: ServiceRespBody =
-                Full::new(Bytes::from("Request does not match allowed patterns"))
-                    .map_err(SrvError::from)
-                    .boxed();
-            #[cfg(not(feature = "boxed_body"))]
-            let body: ServiceRespBody =
-                Full::new(Bytes::from("Request does not match allowed patterns"));
-            let response = Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(body)
-                .expect("Failed to build response");
-            Box::pin(async move { Ok(response) })
+            // --- OPTIMIZATION: Use std::future::ready ---
+            // There is no need for an 'async move' block here.
+            // std::future::ready is more efficient for immediate values.
+            Box::pin(ready(Ok(self.build_forbidden_response())))
         }
+    }
+}
+
+impl<S> InspectionService<S> {
+    /// Constructs a **403 Forbidden** response with a short explanatory body.
+    ///
+    /// Separated into its own method to keep the `call` body concise and readable.
+    fn build_forbidden_response(&self) -> Response<ServiceRespBody> {
+        // #[cfg(feature = "boxed_body")]
+        let body: ServiceRespBody =
+            Full::new(Bytes::from("Request does not match allowed patterns"))
+                .map_err(SrvError::from)
+                .boxed();
+
+        Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(body)
+            .expect("Builder is infallible with these inputs")
     }
 }

@@ -3,6 +3,8 @@
 
 /client/src/mtls_client old.rs
 /ip_addresses.txt
+/out.json
+
 
 /client_certs/
 /jwt/

@@ -2,8 +2,8 @@
 //!
 //! Maintains a global [`AtomicU64`](std::sync::atomic::AtomicU64) counter that
 //! is incremented for every completed request. A log line is emitted at `INFO`
-//! level every **500** requests to keep the output manageable while still
-//! providing periodic throughput feedback.
+//! level every **500** requests (and the very first request) to keep the output manageable
+//! while still providing periodic throughput feedback.
 //!
 //! ## Design Details
 //!
@@ -120,8 +120,8 @@ where
             Poll::Ready(result) => {
                 // `fetch_add` returns the *previous* value; add 1 to get the new total.
                 let old = this.count.fetch_add(1, Ordering::Relaxed) + 1;
-                // Only log every 500 requests to save CPU/IO
-                if old % 500 == 0 {
+                // Log the first request, then every 500 requests to save CPU/IO
+                if old == 1 || old % 500 == 0 {
                     tracing::info!("{}: Processed {} requests", this.server_name, old);
                 }
                 Poll::Ready(result)

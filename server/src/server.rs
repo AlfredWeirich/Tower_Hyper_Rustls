@@ -48,6 +48,12 @@
 
 // tokio console: https://tokio.rs/tokio/topics/tracing-next-steps
 
+/// Optimization 1
+/// Use mimalloc as the global allocator for reduced contention
+/// under heavy multi-threaded workloads (5–15% throughput gain).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // === Standard Library ===
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -57,11 +63,7 @@ use std::time::Duration;
 use anyhow::{Context, Error};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpListener,
-    runtime::Builder,
-};
+use tokio::{net::TcpListener, runtime::Builder};
 
 use tokio_util::sync::CancellationToken;
 use tower::{Layer, ServiceExt, limit::ConcurrencyLimit};
@@ -89,7 +91,7 @@ use server::{
 
 use http_body_util::BodyExt;
 use hyper::Response;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
 use rustls::ServerConfig as RustlsServerConfig;
 use server::H3Body;
@@ -266,7 +268,30 @@ async fn start_single_server(
                             let conn_token = cancel_token.clone();
                             tokio::spawn(async move {
                                 let handler = ConnectionHandler::new(svc, peer_addr, Vec::new());
-                                let _ = handle_http1_connection(stream, handler, conn_token).await;
+                                let mut builder = auto::Builder::new(TokioExecutor::new());
+                                // Timeout: drop clients that take too long to send HTTP/1 headers
+                                builder.http1()
+                                    .timer(TokioTimer::new())
+                                    .header_read_timeout(Duration::from_secs(10));
+                                // Timeout: detect dead HTTP/2 connections via keep-alive pings
+                                builder
+                                    .http2()
+                                    .timer(TokioTimer::new())
+                                    .initial_stream_window_size(1024 * 1024)
+                                    .max_concurrent_streams(1024)
+                                    .max_pending_accept_reset_streams(Some(16384))
+                                    .keep_alive_interval(Some(Duration::from_secs(30)))
+                                    .keep_alive_timeout(Duration::from_secs(10));
+                                let conn = builder
+                                    .serve_connection(TokioIo::new(stream), handler);
+                                let mut conn = std::pin::pin!(conn);
+                                tokio::select! {
+                                    res = conn.as_mut() => { let _ = res; },
+                                    _ = conn_token.cancelled() => {
+                                        conn.as_mut().graceful_shutdown();
+                                        let _ = conn.await;
+                                    }
+                                }
                             });
                         }
                         Err(e) => error!("{}: HTTP Accept error: {}", server_config.name, e),
@@ -401,37 +426,6 @@ fn apply_layers(
         })
 }
 
-// --- Hyper Connection Helpers ---
-
-/// Handles a single HTTP/1.1 (or upgrade to HTTP/2) connection on a given stream.
-///
-/// This function uses `hyper` to serve the connection using the provided `ConnectionHandler`.
-/// It integrates with a cancellation token to allow graceful shutdown of the individual connection.
-///
-/// # Type Parameters
-///
-/// * `I`: The asynchronous I/O stream type (e.g., `TcpStream`, `TlsStream`).
-async fn handle_http1_connection<I>(
-    stream: I,
-    handler: ConnectionHandler,
-    token: CancellationToken,
-) -> Result<(), hyper::Error>
-where
-    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let conn =
-        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), handler);
-    let mut conn = std::pin::pin!(conn);
-
-    tokio::select! {
-        res = conn.as_mut() => res,
-        _ = token.cancelled() => {
-            conn.as_mut().graceful_shutdown();
-            conn.await
-        }
-    }
-}
-
 // === Refactored run_dual_stack ===
 
 /// Runs a dual-stack server supporting both TCP (HTTP/1.1, HTTP/2) and UDP (HTTP/3).
@@ -502,12 +496,21 @@ async fn run_tcp_listener(
                 _ = cancel_token.cancelled() => break,
                 res = tcp_listener.accept() => {
                     if let Ok((stream, peer_addr)) = res {
+                        // Optimization 2
+                        // Disable Nagle's algorithm — send small responses immediately
+                        // instead of waiting to batch them. Critical for low-latency APIs.
+                        let _ = stream.set_nodelay(true);
                         let acceptor = acceptor.clone();
                         let svc = service_stack.clone();
                         tokio::spawn(async move {
                             trace!("{}: TCP Connection accepted", server_name);
-                            match acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
+                            // Timeout: abort TLS handshakes that stall (Slowloris protection)
+                            let tls_result = tokio::time::timeout(
+                                Duration::from_secs(10),
+                                acceptor.accept(stream),
+                            ).await;
+                            match tls_result {
+                                Ok(Ok(tls_stream)) => {
                                     // --- TCP OID EXTRACTION ---
                                     let (_, session) = tls_stream.get_ref();
                                     let certs = session.peer_certificates();
@@ -520,12 +523,29 @@ async fn run_tcp_listener(
                                     // Use the standard constructor which wraps Vec in Arc
                                     let handler = ConnectionHandler::new(svc, peer_addr, client_oids);
 
-                                    let _ = auto::Builder::new(TokioExecutor::new())
+                                    let mut builder = auto::Builder::new(TokioExecutor::new());
+                                    // Timeout: drop clients that take too long to send HTTP/1 headers
+                                    builder.http1()
+                                    .timer(TokioTimer::new())
+                                    .header_read_timeout(Duration::from_secs(10));
+                                    // Timeout: detect dead HTTP/2 connections via keep-alive pings
+                                    builder
+                                        .http2()
+                                        .timer(TokioTimer::new())
+                                        .initial_stream_window_size(1024 * 1024)
+                                        .max_concurrent_streams(1024)
+                                        .max_pending_accept_reset_streams(Some(16384))
+                                        .keep_alive_interval(Some(Duration::from_secs(30)))
+                                        .keep_alive_timeout(Duration::from_secs(10));
+                                    let _ = builder
                                         .serve_connection(TokioIo::new(tls_stream), handler)
                                         .await;
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     error!("{}: TLS Handshake failed: {}", server_name, e);
+                                }
+                                Err(_) => {
+                                    trace!("{}: TLS Handshake timed out for {}", server_name, peer_addr);
                                 }
                             }
                         });
@@ -564,7 +584,22 @@ async fn run_udp_listener(
         .map_err(|e| format!("TLS Config Error for QUIC: {e}"))?;
 
     let mut quinn_server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    quinn_server_config.transport_config(Arc::new(quinn::TransportConfig::default()));
+
+    // Optimization 3
+    // Tune QUIC transport for higher throughput (defaults are conservative)
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_uni_streams(1024u32.into());
+    transport.max_concurrent_bidi_streams(1024u32.into());
+    // Aggressively tune flow control windows to prevent stream resets under high load
+    transport.receive_window(128_000_000u32.into());
+    transport.send_window(128_000_000u64);
+    transport.stream_receive_window(16_000_000u32.into());
+    // Timeout: close idle QUIC connections after 30 seconds
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(Duration::from_secs(30)).unwrap(),
+    ));
+    transport.keep_alive_interval(Some(Duration::from_secs(10)));
+    quinn_server_config.transport_config(Arc::new(transport));
 
     // Bind UDP socket
     let endpoint = quinn::Endpoint::server(quinn_server_config, server_addr)?;

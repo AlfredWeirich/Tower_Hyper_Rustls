@@ -82,11 +82,11 @@ impl Service<Request<SrvBody>> for EchoService {
             match (req.method(), req.uri().path()) {
                 // ── GET / ────────────────────────────────────────────
                 (&hyper::Method::GET, "/") => {
-                    tracing::info!("{}: GET /", server_name);
+                    // tracing::info!("{}: GET /", server_name);
                     // Run a synthetic CPU + sleep workload for load testing.
-                    let _load_resp = load_test_echo().await;
+                    // let _load_resp = load_test_echo().await;
                     // #[cfg(feature = "boxed_body")]
-                    let body: ServiceRespBody = Full::new(Bytes::from("Echo!"))
+                    let body: ServiceRespBody = Full::new(Bytes::from_static(b"Echo!"))
                         .map_err(SrvError::from)
                         .boxed();
 
@@ -142,7 +142,7 @@ impl Service<Request<SrvBody>> for EchoService {
                 (other, other_path) => {
                     tracing::warn!("{}: {} {} -> 404", server_name, other, other_path);
                     // #[cfg(feature = "boxed_body")]
-                    let body: ServiceRespBody = Full::new(Bytes::from("Not Found"))
+                    let body: ServiceRespBody = Full::new(Bytes::from_static(b"Not Found"))
                         .map_err(SrvError::from)
                         .boxed();
 

@@ -31,6 +31,7 @@ use hyper::{
 // use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::LazyLock; // Optimization 4
 use std::task::{Context, Poll};
 use tower::Service;
 use tower::util::BoxCloneService;
@@ -154,6 +155,20 @@ impl http_body::Body for H3Body {
         self.inner.as_mut().poll_next(cx)
     }
 }
+
+// Optimization 5
+// ── Pre-Computed Security Headers ────────────────────────────────────────────
+//
+// Parsed once at program startup, then cloned (cheap Arc bump) into every
+// response. Avoids re-parsing constant strings on the hot path.
+
+use hyper::header::HeaderValue;
+
+static HSTS_VALUE: LazyLock<HeaderValue> =
+    LazyLock::new(|| "max-age=63072000; includeSubDomains".parse().unwrap());
+static NOSNIFF_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "nosniff".parse().unwrap());
+static CSP_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "default-src 'none'".parse().unwrap());
+static CACHE_CTL_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "no-store".parse().unwrap());
 
 // ── Connection Handler ───────────────────────────────────────────────────────
 
@@ -307,42 +322,28 @@ impl ConnectionHandler {
         // 2. Zero-cost injection. Just cloning the Arc pointer.
         req.extensions_mut().insert(self.client_roles.clone());
 
+        // Tower service contract: poll_ready() MUST be called before call().
+        // This is critical for layers like ConcurrencyLimit that acquire a
+        // semaphore permit during poll_ready() and assert it exists in call().
+        // Most layers silently accept skipping this, but ConcurrencyLimit panics.
+        futures::future::poll_fn(|cx| self.inner_service.poll_ready(cx)).await?;
+
         let mut resp = self.inner_service.call(req).await?;
 
+        // Optimization 6
         // === Security Response Headers ===
         // Injected at the ConnectionHandler level so they apply to ALL responses,
         // regardless of middleware configuration. Cannot be accidentally disabled.
-        let headers = resp.headers_mut();
-        headers.insert(
-            // HSTS: Forces browsers to use HTTPS for 2 years, preventing
-            // TLS downgrade attacks on the initial plaintext request.
-            hyper::header::STRICT_TRANSPORT_SECURITY,
-            "max-age=63072000; includeSubDomains".parse().unwrap(),
-        );
-        headers.insert(
-            // Prevents MIME-type sniffing: browsers must trust the declared
-            // Content-Type, blocking attacks that rely on content misinterpretation.
-            hyper::header::X_CONTENT_TYPE_OPTIONS,
-            "nosniff".parse().unwrap(),
-        );
+        // === Security Response Headers (pre-computed, zero-parse overhead) ===
         // headers.insert(
         //     /*Tells browsers: "Don't embed this page in a frame, iframe, or object." This prevents clickjacking attacks where an attacker puts your site inside a hidden iframe on their site to trick users into clicking things they didn't mean to click. */
         //     hyper::header::X_FRAME_OPTIONS,
         //     "DENY".parse().unwrap());
-        headers.insert(
-            // CSP `default-src 'none'`: the most restrictive Content Security
-            // Policy — no external resources (scripts, images, etc.) may load.
-            // Ideal for a pure API that only returns JSON/data.
-            hyper::header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'".parse().unwrap(),
-        );
-        headers.insert(
-            // Prevents caching of dynamic API responses so clients always
-            // receive fresh data and sensitive information is not stored
-            // in browser/proxy caches.
-            hyper::header::CACHE_CONTROL,
-            "no-store".parse().unwrap(),
-        );
+        let headers = resp.headers_mut();
+        headers.insert(hyper::header::STRICT_TRANSPORT_SECURITY, HSTS_VALUE.clone());
+        headers.insert(hyper::header::X_CONTENT_TYPE_OPTIONS, NOSNIFF_VALUE.clone());
+        headers.insert(hyper::header::CONTENT_SECURITY_POLICY, CSP_VALUE.clone());
+        headers.insert(hyper::header::CACHE_CONTROL, CACHE_CTL_VALUE.clone());
 
         Ok(resp)
     }

@@ -137,6 +137,10 @@ pub fn tls_config(
     };
 
     let mut config = config;
+    // Optimization 7
+    // Enable TLS session resumption — reconnecting clients skip the full
+    // handshake, saving a round-trip. 1024 entries covers high-concurrency.
+    config.session_storage = rustls::server::ServerSessionMemoryCache::new(1024);
     // Enable ALPN for HTTP/3, HTTP/2, and HTTP/1.1 negotiation.
     // The order indicates server preference (H3 > H2 > H1.1).
     config.alpn_protocols = vec![b"h3".to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];

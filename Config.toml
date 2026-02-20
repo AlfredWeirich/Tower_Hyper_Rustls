@@ -57,7 +57,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # "None"       - No auth (Public)
     # "ClientCert" - Mutual TLS (mTLS). Requires [[Server.client_certs]]
     # "JWT"        - JSON Web Token. Requires [Server.Layers.JWT]
-    authentication = "ClientCert"
+    authentication = "None"
 
     # The service type that handles the request after passing through layers:
     # "Echo"   - Returns the request data as-is (Debug/Health checks)
@@ -69,7 +69,8 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     [Server.Layers]
     # Options: "Timing", "Counter", "Logger", "Inspection", "JwtAuth", 
     #          "ConcurrencyLimit", "RateLimiter:Simple", "RateLimiter:TokenBucket"
-    enabled = ["Decompression","MaxPayload", "Logger",  "Inspection",  "Compression", "AltSvc"] 
+    # enabled = ["Decompression","MaxPayload", "Logger",  "Inspection",  "Compression", "AltSvc"] 
+    enabled = [] 
 
     # --- Decompression Bomb Protection ---
     [Server.Layers.Decompression]

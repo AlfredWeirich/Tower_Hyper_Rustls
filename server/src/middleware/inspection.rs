@@ -153,11 +153,12 @@ impl<S> InspectionService<S> {
     ///
     /// Separated into its own method to keep the `call` body concise and readable.
     fn build_forbidden_response(&self) -> Response<ServiceRespBody> {
-        // #[cfg(feature = "boxed_body")]
-        let body: ServiceRespBody =
-            Full::new(Bytes::from("Request does not match allowed patterns"))
-                .map_err(SrvError::from)
-                .boxed();
+
+        let body: ServiceRespBody = Full::new(Bytes::from_static(
+            b"Request does not match allowed patterns",
+        ))
+        .map_err(SrvError::from)
+        .boxed();
 
         Response::builder()
             .status(StatusCode::FORBIDDEN)

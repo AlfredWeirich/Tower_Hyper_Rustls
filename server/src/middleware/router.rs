@@ -108,7 +108,7 @@ pub struct RouterService {
     /// Reference to the global, leaked [`ServerConfig`].
     ///
     /// Used at request time only for the server name (logging / diagnostics).
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
 
     /// Pre-formatted `Bearer <token>` header value, ready to be inserted
     /// into outgoing requests when JWT-based upstream authentication is enabled.
@@ -145,7 +145,7 @@ impl RouterService {
     /// Panics if `config.router_params` is `None`, which indicates a
     /// programming error in the configuration parser—this service must
     /// only be created for server instances that have routing enabled.
-    pub fn new(config: &'static ServerConfig) -> Self {
+    pub fn new(config: Arc<ServerConfig>) -> Self {
         let router_params = config
             .router_params
             .as_ref()
@@ -294,7 +294,7 @@ impl Service<Request<SrvBody>> for RouterService {
         // `async` block without borrowing `self`.
         let router = Arc::clone(&self.router);
         let client = self.client.clone();
-        let server_name = self.config.name.as_str();
+        let server_name = self.config.static_name.unwrap_or("unknown");
         let jwt_token = self.jwt_token.clone();
 
         Box::pin(async move {

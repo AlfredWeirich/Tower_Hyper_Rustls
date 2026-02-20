@@ -17,3 +17,5 @@ overflow-checks = false  # Skip integer overflow checks in release
 
 # For target-native optimizations (AVX2, AES-NI, etc.), build with:
 #   RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+

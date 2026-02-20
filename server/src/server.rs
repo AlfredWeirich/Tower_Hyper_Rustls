@@ -95,6 +95,7 @@ use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
 use rustls::ServerConfig as RustlsServerConfig;
 use server::H3Body;
+use std::sync::Mutex;
 
 ///    Main entry point for the server application.
 ///
@@ -110,6 +111,12 @@ fn main() -> Result<(), Error> {
         .nth(1)
         .unwrap_or_else(|| "Config.toml".to_string());
 
+    // This installs 'ring' as the default provider for the entire process.
+    // Ensure you have the 'ring' feature enabled in rustls (usually default).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize the global configuration from the provided file.
     // This uses a OnceLock pattern for safe, global read access.
     let config = Config::init(&arg)?;
@@ -123,12 +130,6 @@ fn main() -> Result<(), Error> {
 
     info!("Configuration loaded from: {}", arg);
     trace!("Full Config: {:#?}", config);
-
-    // This installs 'ring' as the default provider for the entire process.
-    // Ensure you have the 'ring' feature enabled in rustls (usually default).
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
 
     // Build the high-performance multi-threaded Tokio runtime.
     let runtime = Builder::new_multi_thread()
@@ -148,9 +149,18 @@ fn main() -> Result<(), Error> {
 /// - For each enabled server, it launches a separate, independent task (green thread).
 /// - It listens for a "Shutdown Signal" (like pressing Ctrl+C).
 /// - It ensures all servers stop gracefully before the program exits.
-async fn main_async(config: &'static Config) -> Result<(), Error> {
-    let cancel_token = CancellationToken::new();
+async fn main_async(config: Arc<Config>) -> Result<(), Error> {
     let mut server_join_set = tokio::task::JoinSet::new();
+
+    // Map: port -> (CancellationToken, Arc<ServerConfig>, Arc<Mutex<BoxedCloneService>>)
+    let mut active_servers: std::collections::HashMap<
+        u16,
+        (
+            CancellationToken,
+            Arc<ServerConfig>,
+            Arc<Mutex<BoxedCloneService>>,
+        ),
+    > = std::collections::HashMap::new();
 
     // Iterate through all configured servers and spawn tasks for those that are enabled.
     for server_config in &config.servers {
@@ -158,19 +168,129 @@ async fn main_async(config: &'static Config) -> Result<(), Error> {
             continue;
         }
 
-        let server_cancel_token = cancel_token.clone();
+        let cancel_token = CancellationToken::new();
+        let server_config_arc = Arc::new(server_config.clone());
+
+        let service_stack = match build_service_stack(&server_config_arc) {
+            Ok(svc) => svc,
+            Err(e) => {
+                error!(
+                    "{}: Failed to build initial service stack: {:?}",
+                    server_config.name, e
+                );
+                continue;
+            }
+        };
+        let dynamic_stack = Arc::new(Mutex::new(service_stack));
+
+        active_servers.insert(
+            server_config.port,
+            (
+                cancel_token.clone(),
+                server_config_arc.clone(),
+                dynamic_stack.clone(),
+            ),
+        );
+
         server_join_set.spawn(async move {
-            // Task-per-server model allows independent failures and management.
-            start_single_server(server_config, server_cancel_token).await;
+            start_single_server(server_config_arc, cancel_token, dynamic_stack).await;
         });
     }
 
-    // Wait for a shutdown signal or for any server task to complete.
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("Shutdown signal received (Ctrl+C). Starting graceful shutdown...");
-            cancel_token.cancel(); // Signal all server tasks to stop accepting new connections
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+
+    // Wait for a shutdown signal or handle configuration reloads
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutdown signal received (Ctrl+C). Starting graceful shutdown...");
+                break;
+            }
+            _ = sighup.recv() => {
+                info!("Received SIGHUP, initiating hot-reload...");
+
+                // 1. Reload configuration from disk
+                // Config::init reads the file and returns the new Arc<Config>.
+                // It also updates the globally available rustls CertifiedKeys (via ArcSwap)
+                // so that DynamicCertResolver instantly gets the new certificates.
+                let new_config = match Config::init("Config.toml") {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to reload config on SIGHUP, ignoring: {:?}", e);
+                        continue;
+                    }
+                };
+
+                info!("Successfully parsed new Config.toml");
+                let mut next_active_servers = std::collections::HashMap::new();
+
+                // 2. Diff and manage listeners
+                for new_server in &new_config.servers {
+                    if !new_server.enabled { continue; }
+
+                    let needs_restart = match active_servers.get(&new_server.port) {
+                        None => true, // New listener on this port
+                        Some((_, old_server, _)) => {
+                            // Restart listener if fundamental binding parameters changed
+                            old_server.ip != new_server.ip || old_server.protocol != new_server.protocol
+                        }
+                    };
+
+                    if needs_restart {
+                        info!("Starting new listener for '{}' on port {}", new_server.name, new_server.port);
+                        let cancel_token = CancellationToken::new();
+                        let server_config_arc = Arc::new(new_server.clone());
+
+                        let service_stack = match build_service_stack(&server_config_arc) {
+                            Ok(svc) => svc,
+                            Err(e) => {
+                                error!("{}: Failed to build service stack: {:?}", new_server.name, e);
+                                continue;
+                            }
+                        };
+                        let dynamic_stack = Arc::new(Mutex::new(service_stack));
+
+                        next_active_servers.insert(
+                            new_server.port,
+                            (cancel_token.clone(), server_config_arc.clone(), dynamic_stack.clone()),
+                        );
+
+                        server_join_set.spawn(async move {
+                            start_single_server(server_config_arc, cancel_token, dynamic_stack).await;
+                        });
+                    } else {
+                        // Keep listener alive!
+                        // Removing from active_servers so we know which ones to drop later
+                        let (old_token, _, dynamic_stack) = active_servers.remove(&new_server.port).unwrap();
+                        let server_config_arc = Arc::new(new_server.clone());
+
+                        // Rebuild service stack for new config
+                        if let Ok(new_svc) = build_service_stack(&server_config_arc) {
+                            *dynamic_stack.lock().unwrap() = new_svc;
+                            info!("Hot-swapped service stack for '{}' on port {}", new_server.name, new_server.port);
+                        } else {
+                            error!("Failed to rebuild service stack for '{}', keeping old stack", new_server.name);
+                        }
+
+                        next_active_servers.insert(new_server.port, (old_token, server_config_arc, dynamic_stack));
+                    }
+                }
+
+                // 3. Stop drained/removed listeners
+                for (port, (token, old_server, _)) in active_servers.drain() {
+                    info!("Stopping listener for '{}' on port {}", old_server.name, port);
+                    token.cancel();
+                }
+
+                active_servers = next_active_servers;
+                info!("Hot-reload complete.");
+            }
         }
+    }
+
+    // Cancel all running listeners on graceful shutdown
+    for (_, (token, _, _)) in active_servers {
+        token.cancel();
     }
 
     // Await the completion of all spawned server tasks.
@@ -195,25 +315,14 @@ async fn main_async(config: &'static Config) -> Result<(), Error> {
 ///    - **HTTPS**: Starts a "Dual Stack" listener. accessible via TCP (traditional web) AND UDP (modern HTTP/3).
 ///    - **HTTP**: Starts a simple TCP listener for plaintext traffic.
 async fn start_single_server(
-    server_config: &'static ServerConfig,
+    server_config: Arc<ServerConfig>,
     cancel_token: CancellationToken,
+    dynamic_stack: Arc<Mutex<BoxedCloneService>>,
 ) {
     let server_addr = match server_config.get_server_ip() {
         Ok(addr) => addr,
         Err(e) => {
             error!("{}: Failed to resolve IP: {:?}", server_config.name, e);
-            return;
-        }
-    };
-
-    // Build the service stack
-    let service_stack = match build_service_stack(server_config) {
-        Ok(svc) => svc,
-        Err(e) => {
-            error!(
-                "{}: Failed to build service stack: {:?}",
-                server_config.name, e
-            );
             return;
         }
     };
@@ -225,7 +334,7 @@ async fn start_single_server(
 
     // === HTTPS / DUAL STACK PATH ===
     if server_config.protocol == Protocol::Https {
-        let tls_config: RustlsServerConfig = match build_rustls_config(server_config) {
+        let tls_config: RustlsServerConfig = match build_rustls_config(server_config.as_ref()) {
             Ok(cfg) => cfg,
             Err(e) => {
                 error!("{}: TLS Setup Error: {:?}", server_config.name, e);
@@ -236,9 +345,9 @@ async fn start_single_server(
         if let Err(e) = run_dual_stack(
             server_addr,
             tls_config,
-            service_stack,
+            dynamic_stack,
             cancel_token,
-            &server_config.name,
+            server_config.static_name.expect("missing static_name"),
         )
         .await
         {
@@ -264,7 +373,7 @@ async fn start_single_server(
                 res = listener.accept() => {
                     match res {
                         Ok((stream, peer_addr)) => {
-                            let svc = service_stack.clone();
+                            let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack per connection
                             let conn_token = cancel_token.clone();
                             tokio::spawn(async move {
                                 let handler = ConnectionHandler::new(svc, peer_addr, Vec::new());
@@ -315,7 +424,7 @@ async fn start_single_server(
 /// # Returns
 /// A `Result` which is `Ok` containing a `BoxedCloneService` if successful,
 /// or an `Error` if the service stack cannot be built (e.g., missing compiled paths).
-fn build_service_stack(server_config: &'static ServerConfig) -> Result<BoxedCloneService, Error> {
+fn build_service_stack(server_config: &Arc<ServerConfig>) -> Result<BoxedCloneService, Error> {
     let layers = server_config.layers.build_middleware_layers()?;
 
     // Ensure compiled paths are available.
@@ -331,15 +440,17 @@ fn build_service_stack(server_config: &'static ServerConfig) -> Result<BoxedClon
             ))?;
 
     let base_service = match server_config.service {
-        ServiceType::Echo => EchoService::new(&server_config.name).boxed_clone(),
-        ServiceType::Router => RouterService::new(server_config).boxed_clone(),
+        ServiceType::Echo => {
+            EchoService::new(server_config.static_name.expect("static_name missing")).boxed_clone()
+        }
+        ServiceType::Router => RouterService::new(server_config.clone()).boxed_clone(),
     };
 
     Ok(apply_layers(
         base_service, // The core service (Echo or Router) handling the request
         layers,
-        &server_config.name,
-        compiled_allowed_pathes,
+        server_config.static_name.expect("static_name missing"),
+        compiled_allowed_pathes.clone(),
         server_config.port,
     ))
 }
@@ -365,7 +476,7 @@ fn apply_layers(
     service: BoxedCloneService,
     layers: Vec<MiddlewareLayer>,
     server_name: &'static str,
-    compiled_allowed_pathes: &'static CompiledAllowedPathes,
+    compiled_allowed_pathes: Arc<CompiledAllowedPathes>,
     server_port: u16, // <--- Add this argument
 ) -> BoxedCloneService {
     layers
@@ -376,7 +487,7 @@ fn apply_layers(
             MiddlewareLayer::Counter => CountingLayer::new(server_name).layer(svc).boxed_clone(),
             MiddlewareLayer::Logger => LoggerLayer::new(server_name).layer(svc).boxed_clone(),
             MiddlewareLayer::Inspection => {
-                InspectionLayer::new(compiled_allowed_pathes, server_name)
+                InspectionLayer::new(compiled_allowed_pathes.clone(), server_name)
                     .layer(svc)
                     .boxed_clone()
             }
@@ -439,7 +550,7 @@ fn apply_layers(
 pub async fn run_dual_stack(
     server_addr: SocketAddr,
     tls_config: RustlsServerConfig,
-    service_stack: BoxedCloneService,
+    dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -453,7 +564,7 @@ pub async fn run_dual_stack(
     let tcp_handle = run_tcp_listener(
         server_addr,
         arc_tls_config.clone(),
-        service_stack.clone(),
+        dynamic_stack.clone(),
         tcp_cancel_token,
         server_name,
     );
@@ -462,7 +573,7 @@ pub async fn run_dual_stack(
     let udp_handle = run_udp_listener(
         server_addr,
         arc_tls_config,
-        service_stack,
+        dynamic_stack,
         udp_cancel_token,
         server_name,
     );
@@ -483,7 +594,7 @@ pub async fn run_dual_stack(
 async fn run_tcp_listener(
     server_addr: SocketAddr,
     tls_config: Arc<RustlsServerConfig>,
-    service_stack: BoxedCloneService,
+    dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -501,7 +612,7 @@ async fn run_tcp_listener(
                         // instead of waiting to batch them. Critical for low-latency APIs.
                         let _ = stream.set_nodelay(true);
                         let acceptor = acceptor.clone();
-                        let svc = service_stack.clone();
+                        let dynamic_stack = dynamic_stack.clone();
                         tokio::spawn(async move {
                             trace!("{}: TCP Connection accepted", server_name);
                             // Timeout: abort TLS handshakes that stall (Slowloris protection)
@@ -520,6 +631,7 @@ async fn run_tcp_listener(
                                         .map(|cert| extract_oids_from_cert(cert.as_ref()))
                                         .unwrap_or_default();
 
+                                    let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack
                                     // Use the standard constructor which wraps Vec in Arc
                                     let handler = ConnectionHandler::new(svc, peer_addr, client_oids);
 
@@ -571,7 +683,7 @@ async fn run_tcp_listener(
 async fn run_udp_listener(
     server_addr: SocketAddr,
     tls_config: Arc<RustlsServerConfig>,
-    service_stack: BoxedCloneService,
+    dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -611,10 +723,10 @@ async fn run_udp_listener(
                 res = endpoint.accept() => {
                     if let Some(conn) = res {
                         trace!("{}: UDP Connection accepted", server_name);
-                        let svc = service_stack.clone();
+                        let dynamic_stack = dynamic_stack.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_h3_connection(conn, svc, server_name).await {
+                            if let Err(e) = handle_h3_connection(conn, dynamic_stack, server_name).await {
                                 error!("{}: H3 Connection Error: {:?}", server_name, e);
                             }
                         });
@@ -641,7 +753,7 @@ async fn run_udp_listener(
 /// 4. **Serve**: Passes each request to our `ConnectionHandler`.
 async fn handle_h3_connection(
     connecting: quinn::Incoming,
-    service_stack: BoxedCloneService,
+    dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     #[allow(unused_variables)] server_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Establish QUIC connection
@@ -686,7 +798,7 @@ async fn handle_h3_connection(
     loop {
         match h3_server.accept().await {
             Ok(Some(resolver)) => {
-                let svc = service_stack.clone();
+                let svc = dynamic_stack.lock().unwrap().clone(); // per QUIC connection/stream
                 // Cheap clone of the already calculated roles
                 let roles_for_req = shared_roles.clone();
 
@@ -821,7 +933,7 @@ async fn handle_h3_connection(
 ///
 /// It loads the server's certificate chain and private key.
 /// If client certificate authentication (mTLS) is enabled, it also loads the client CA roots.
-fn build_rustls_config(config: &'static ServerConfig) -> Result<RustlsServerConfig, Error> {
+fn build_rustls_config(config: &ServerConfig) -> Result<RustlsServerConfig, Error> {
     let server_certs = config.server_certs.as_ref().context(format!(
         "{}: HTTPS enabled but no server_certs",
         config.name
@@ -840,7 +952,7 @@ fn build_rustls_config(config: &'static ServerConfig) -> Result<RustlsServerConf
 
     // Use your existing tls_config function
     let tls_config = tls_config(
-        &config.name,
+        config.static_name.expect("static_name missing"),
         server_certs,
         client_certs,
         config.authentication == AuthenticationMethod::ClientCert,

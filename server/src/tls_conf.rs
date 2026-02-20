@@ -20,13 +20,64 @@ use std::sync::Arc;
 // === External Crates ===
 use anyhow::Error;
 use rustls::ServerConfig as RustlsServerConfig;
+use rustls::crypto::CryptoProvider;
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateRevocationListDer, pem::PemObject};
+use std::fmt::Debug;
 use tracing::trace;
 use x509_parser::prelude::*;
 
 // === Internal Modules ===
 use crate::configuration::{ClientCertConfig, ServerCertConfig};
 use common::{load_certs, load_single_key};
+
+pub fn load_certified_key(
+    server_name: &str,
+    server_cert_config: &ServerCertConfig,
+) -> Result<Arc<CertifiedKey>, Error> {
+    let server_certs = load_certs(&server_cert_config.ssl_certificate, server_name);
+    trace!("{}: Server certificates loaded successfully.", server_name);
+
+    let server_key = load_single_key(&server_cert_config.ssl_certificate_key, server_name);
+    trace!("{}: Server private key loaded successfully.", server_name);
+
+    let provider = CryptoProvider::get_default()
+        .ok_or_else(|| Error::msg("No default crypto provider available"))?;
+    let signing_key = provider
+        .key_provider
+        .load_private_key(server_key)
+        .map_err(|e| {
+            Error::msg(format!(
+                "{}: Invalid or unsupported private key type: {}",
+                server_name, e
+            ))
+        })?;
+
+    Ok(Arc::new(CertifiedKey::new(server_certs, signing_key)))
+}
+
+#[derive(Debug)]
+pub struct DynamicCertResolver {
+    server_name: &'static str,
+}
+
+impl DynamicCertResolver {
+    pub fn new(server_name: &'static str) -> Self {
+        Self { server_name }
+    }
+}
+
+impl ResolvesServerCert for DynamicCertResolver {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let config = crate::configuration::Config::global();
+        config
+            .servers
+            .iter()
+            .find(|s| s.static_name == Some(self.server_name))
+            .and_then(|s| s.certified_key.clone())
+    }
+}
 
 /// Builds and returns a Rustls `ServerConfig` with optional mutual TLS (mTLS) support.
 ///
@@ -61,19 +112,11 @@ use common::{load_certs, load_single_key};
 /// This function will panic only if a `.expect()` is triggered inside a utility function
 /// (not expected if `load_certs`/`load_single_key` are implemented with Result).
 pub fn tls_config(
-    server_name: &str,
-    server_cert_config: &ServerCertConfig,
+    server_name: &'static str,
+    _server_cert_config: &ServerCertConfig, // Kept for signature compatibility for now, but not used directly
     client_ca_configs: Option<&[ClientCertConfig]>,
     require_client_auth: bool,
 ) -> Result<RustlsServerConfig, Error> {
-    // === Load server certificate and private key ===
-    // Loads PEM-encoded certificates and private key from provided paths.
-    let server_certs = load_certs(&server_cert_config.ssl_certificate, server_name);
-    trace!("{}: Server certificates loaded successfully.", server_name);
-
-    let server_key = load_single_key(&server_cert_config.ssl_certificate_key, server_name);
-    trace!("{}: Server private key loaded successfully.", server_name);
-
     // Create a fresh Rustls config builder (TLS 1.3 by default)
     let config_builder = rustls::ServerConfig::builder();
 
@@ -123,17 +166,17 @@ pub fn tls_config(
                 ))
             })?;
 
-        // Attach verifier and server certificates to the config builder
-        config_builder
+        // Attach verifier and a dynamic cert resolver to the config builder
+        let config = config_builder
             .with_client_cert_verifier(client_verifier)
-            .with_single_cert(server_certs, server_key)
-            .map_err(|e| Error::msg(format!("{server_name}: Invalid cert/key: {e}")))?
+            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)));
+        config
     } else {
         // No client authentication; set up standard HTTPS only
-        config_builder
+        let config = config_builder
             .with_no_client_auth()
-            .with_single_cert(server_certs, server_key)
-            .map_err(|e| Error::msg(format!("{server_name}: Invalid cert/key: {e}")))?
+            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)));
+        config
     };
 
     let mut config = config;

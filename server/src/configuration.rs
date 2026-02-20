@@ -21,16 +21,18 @@
 //! obtain a `&'static Config` reference.
 
 use anyhow::{Context, Error};
+use arc_swap::ArcSwap;
 use hyper::Uri;
 use regex::Regex;
+use rustls::sign::CertifiedKey;
 use serde::Deserialize;
-use std::{collections::HashMap, fs, net::SocketAddr, sync::OnceLock};
+use std::{collections::HashMap, fs, net::SocketAddr, sync::Arc, sync::OnceLock};
 
 /// The global singleton holder for the parsed configuration.
 ///
 /// Initialised once by [`Config::init`] and then immutably borrowed for the
 /// lifetime of the process.
-static CONFIG: OnceLock<Config> = OnceLock::new();
+static CONFIG: OnceLock<ArcSwap<Config>> = OnceLock::new();
 
 // ============================================================================
 //  Core Enums
@@ -136,6 +138,11 @@ pub struct Config {
 pub struct ServerConfig {
     /// Human-readable name used in all log/trace output.
     pub name: String,
+
+    /// Static reference to the name (populated in `finalize`) to avoid cloning in middleware.
+    #[serde(skip)]
+    pub static_name: Option<&'static str>,
+
     /// IP address to bind to. The special value `"local"` resolves to the
     /// machine's primary local IP at startup.
     pub ip: String,
@@ -184,7 +191,12 @@ pub struct ServerConfig {
     /// Pre-compiled regex patterns for the Inspection layer. Computed in
     /// [`ServerConfig::finalize`].
     #[serde(skip)]
-    pub compiled_allowed_pathes: Option<CompiledAllowedPathes>,
+    pub compiled_allowed_pathes: Option<Arc<CompiledAllowedPathes>>,
+
+    /// The loaded TLS private key + certificate chain. Computed in
+    /// [`ServerConfig::finalize`] if HTTPS matches.
+    #[serde(skip)]
+    pub certified_key: Option<Arc<CertifiedKey>>,
 }
 
 // ============================================================================
@@ -446,7 +458,7 @@ impl Config {
     /// Returns an error if the file cannot be read, TOML parsing fails, or
     /// any server's [`finalize`](ServerConfig::finalize) step detects invalid
     /// configuration.
-    pub fn init(config_file: &str) -> Result<&'static Config, Error> {
+    pub fn init(config_file: &str) -> Result<Arc<Config>, Error> {
         // 1. Read the raw TOML string
         let toml_str = fs::read_to_string(config_file)
             .with_context(|| format!("Failed to read config file: {}", config_file))?;
@@ -476,26 +488,29 @@ impl Config {
             server.finalize()?;
         }
 
-        // 5. Store in global OnceLock
-        // We use .set(). If it returns Err, it means init() was called twice,
-        // which is usually fine to ignore (we just return the existing global).
-        if CONFIG.set(config).is_err() {
-            tracing::warn!("Config::init called multiple times. Using existing configuration.");
+        let arc_config = Arc::new(config);
+
+        // 5. Store in global OnceLock or update ArcSwap
+        if let Some(existing) = CONFIG.get() {
+            existing.store(arc_config);
+        } else if CONFIG.set(ArcSwap::new(arc_config.clone())).is_err() {
+            tracing::warn!("Config::init called multiple times concurrently.");
         }
 
         // 6. Return reference to the global singleton
         Ok(Self::global())
     }
 
-    /// Returns a `'static` reference to the global configuration singleton.
+    /// Returns a cloned `Arc<Config>` from the global configuration singleton.
     ///
     /// # Panics
     ///
     /// Panics if [`Config::init`] has not been called yet.
-    pub fn global() -> &'static Config {
+    pub fn global() -> Arc<Config> {
         CONFIG
             .get()
             .expect("Configuration not initialized - check if Config::init was called in main")
+            .load_full()
     }
 
     /// Maps a client-provided OID suffix to an internal [`UserRole`].
@@ -527,6 +542,22 @@ impl ServerConfig {
     /// Returns an error on any validation failure, with a message identifying
     /// the offending server by name.
     pub fn finalize(&mut self) -> Result<(), Error> {
+        self.static_name = Some(Box::leak(self.name.clone().into_boxed_str()));
+
+        // Eagerly pre-load TLS CertifiedKey if HTTPS is enabled
+        if self.protocol == Protocol::Https {
+            if let Some(cert_config) = &self.server_certs {
+                let static_name = self.static_name.expect("static_name initialized");
+                let loaded_key = crate::tls_conf::load_certified_key(static_name, cert_config)?;
+                self.certified_key = Some(loaded_key);
+            } else {
+                return Err(Error::msg(format!(
+                    "Configuration error in Server '{}': Protocol is 'https' but [Server.server_certs] (ssl_certificate/key) is missing.",
+                    self.name
+                )));
+            }
+        }
+
         self.init_parsed_routes()?;
         self.init_compiled_allowed_pathes()?;
         // === VALIDATION STEP ===
@@ -661,7 +692,7 @@ impl ServerConfig {
         });
 
         // Compile (creates empty HashMaps if None)
-        self.compiled_allowed_pathes = Some(CompiledAllowedPathes::from_raw(&raw)?);
+        self.compiled_allowed_pathes = Some(Arc::new(CompiledAllowedPathes::from_raw(&raw)?));
         Ok(())
     }
 }
@@ -795,6 +826,6 @@ impl Layers {
 /// Convenience wrapper around [`Config::init`].
 ///
 /// Provided for backward compatibility with older calling code in `main()`.
-pub fn get_configuration(config_file: &str) -> Result<&'static Config, Error> {
+pub fn get_configuration(config_file: &str) -> Result<Arc<Config>, Error> {
     Config::init(config_file)
 }

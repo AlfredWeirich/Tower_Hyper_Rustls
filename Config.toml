@@ -44,7 +44,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     ip = "192.168.178.175"
     
     # The TCP port the server will listen on.
-    port = 1337
+    port = 1336
 
     # Master switch for this server instance.
     enabled = true
@@ -182,4 +182,4 @@ pki_base_oid = "1.3.6.1.4.1.65111"
             enabled = []
 
             [Server.Layers.Delay]
-            delay_micros = 250
+            delay_micros = 500

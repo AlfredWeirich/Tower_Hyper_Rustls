@@ -20,6 +20,7 @@
 use std::{
     future::{Future, ready},
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -42,14 +43,14 @@ use crate::{ServiceRespBody, SrvError, configuration::CompiledAllowedPathes};
 pub struct InspectionLayer {
     /// Pre-compiled regex rules. Borrowed from the global configuration with
     /// a `'static` lifetime.
-    rules: &'static CompiledAllowedPathes,
+    rules: Arc<CompiledAllowedPathes>,
     /// Server name label for logging.
     server_name: &'static str,
 }
 
 impl InspectionLayer {
     /// Create a new InspectionLayer with rules and a server name.
-    pub fn new(rules: &'static CompiledAllowedPathes, server_name: &'static str) -> Self {
+    pub fn new(rules: Arc<CompiledAllowedPathes>, server_name: &'static str) -> Self {
         Self {
             rules: rules,
             server_name: server_name,
@@ -63,7 +64,7 @@ impl<S> Layer<S> for InspectionLayer {
     fn layer(&self, inner: S) -> Self::Service {
         InspectionService {
             inner,
-            allowed_pathes: self.rules,
+            allowed_pathes: self.rules.clone(),
             server_name: self.server_name,
         }
     }
@@ -80,7 +81,7 @@ pub struct InspectionService<S> {
     /// The next service in the middleware chain.
     inner: S,
     /// The compiled regex set for allow-list matching.
-    allowed_pathes: &'static CompiledAllowedPathes,
+    allowed_pathes: Arc<CompiledAllowedPathes>,
     /// Server name label for logging.
     server_name: &'static str,
 }
@@ -153,7 +154,6 @@ impl<S> InspectionService<S> {
     ///
     /// Separated into its own method to keep the `call` body concise and readable.
     fn build_forbidden_response(&self) -> Response<ServiceRespBody> {
-
         let body: ServiceRespBody = Full::new(Bytes::from_static(
             b"Request does not match allowed patterns",
         ))

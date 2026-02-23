@@ -214,6 +214,12 @@ pub struct RouteConfig {
     /// Roles permitted to access this route. Empty means unrestricted.
     #[serde(default)]
     pub allowed_roles: Vec<UserRole>,
+    /// How many seconds a node stays dead after a connection failure. Defaults to 10.
+    pub cooldown_seconds: Option<u64>,
+    /// Maximum number of automatic retries on another node. Defaults to 2.
+    pub max_retries: Option<usize>,
+    /// Interval in seconds for actively polling the /health endpoint of upstreams. Defaults to 0 (disabled).
+    pub active_health_check_interval: Option<u64>,
 }
 
 /// A load balancing strategy for downstream forwarding.
@@ -233,6 +239,34 @@ pub struct UpstreamNode {
     pub uri: Uri,
     /// Number of active connections to this upstream (used for LeastConnections).
     pub active_connections: std::sync::atomic::AtomicUsize,
+    /// Whether the node is currently considered alive.
+    pub is_alive: std::sync::atomic::AtomicBool,
+    /// Timestamp of the last connection failure (seconds since UNIX epoch).
+    pub last_failure_time: std::sync::atomic::AtomicU64,
+}
+
+impl UpstreamNode {
+    /// Checks if the node is considered available for routing.
+    /// A node is available if it is marked alive, or if the cooldown period has elapsed.
+    pub fn is_available(&self, cooldown_seconds: u64) -> bool {
+        if self.is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+
+        let last_fail = self
+            .last_failure_time
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if last_fail == 0 {
+            return true;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        now > last_fail + cooldown_seconds
+    }
 }
 
 /// The load-balanced target configuration for a parsed route.
@@ -244,13 +278,64 @@ pub struct RouteTarget {
     pub strategy: LbStrategy,
     /// Atomic counter used for RoundRobin selection.
     pub rr_counter: std::sync::atomic::AtomicUsize,
+    /// Cooldown time for dead nodes before they can be retried.
+    pub cooldown_seconds: u64,
+    /// Maximum amount of automatic retry attempts.
+    pub max_retries: usize,
+    /// Interval in seconds for actively polling the /health endpoint of upstreams. 0 means disabled.
+    pub active_health_check_interval: u64,
 }
 
 impl RouteTarget {
+    /// Marks an upstream node as dead due to a connection failure.
+    pub fn mark_dead(&self, uri: &Uri) {
+        for node in &self.upstreams {
+            if &node.uri == uri {
+                node.is_alive
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                node.last_failure_time
+                    .store(now, std::sync::atomic::Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+
     /// Selects the next upstream node based on the configured load-balancing strategy.
-    pub fn next_upstream(&self, client_ip: Option<&std::net::SocketAddr>) -> &UpstreamNode {
-        if self.upstreams.len() == 1 {
-            return &self.upstreams[0];
+    pub fn next_upstream(
+        &self,
+        client_ip: Option<&std::net::SocketAddr>,
+        failed_uris: &[Uri],
+    ) -> &UpstreamNode {
+        // Filter available nodes first
+        let available: Vec<&UpstreamNode> = self
+            .upstreams
+            .iter()
+            .filter(|n| n.is_available(self.cooldown_seconds) && !failed_uris.contains(&n.uri))
+            .collect();
+
+        let slice = if !available.is_empty() {
+            available
+        } else {
+            // Fallback 1: try nodes not explicitly failed this request
+            let f1: Vec<&UpstreamNode> = self
+                .upstreams
+                .iter()
+                .filter(|n| !failed_uris.contains(&n.uri))
+                .collect();
+            if f1.is_empty() {
+                // Fallback 2: return all upstreams
+                self.upstreams.iter().collect()
+            } else {
+                f1
+            }
+        };
+
+        if slice.len() == 1 {
+            return slice[0];
         }
 
         match self.strategy {
@@ -258,20 +343,19 @@ impl RouteTarget {
                 let count = self
                     .rr_counter
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                &self.upstreams[count % self.upstreams.len()]
+                slice[count % slice.len()]
             }
             LbStrategy::Random => {
-                let index = fastrand::usize(..self.upstreams.len());
-                &self.upstreams[index]
+                let index = fastrand::usize(..slice.len());
+                slice[index]
             }
-            LbStrategy::LeastConnections => self
-                .upstreams
-                .iter()
+            LbStrategy::LeastConnections => slice
+                .into_iter()
                 .min_by_key(|node| {
                     node.active_connections
                         .load(std::sync::atomic::Ordering::Relaxed)
                 })
-                .unwrap_or(&self.upstreams[0]),
+                .unwrap(),
             LbStrategy::Sticky => {
                 let hash = if let Some(addr) = client_ip {
                     use std::hash::{Hash, Hasher};
@@ -282,7 +366,7 @@ impl RouteTarget {
                     // Fallback to random if no IP is provided
                     fastrand::usize(..)
                 };
-                &self.upstreams[hash % self.upstreams.len()]
+                slice[hash % slice.len()]
             }
         }
     }
@@ -752,6 +836,8 @@ impl ServerConfig {
                     upstream_nodes.push(UpstreamNode {
                         uri,
                         active_connections: std::sync::atomic::AtomicUsize::new(0),
+                        is_alive: std::sync::atomic::AtomicBool::new(true),
+                        last_failure_time: std::sync::atomic::AtomicU64::new(0),
                     });
                 }
 
@@ -759,6 +845,9 @@ impl ServerConfig {
                     upstreams: upstream_nodes,
                     strategy: cfg.strategy.clone(),
                     rr_counter: std::sync::atomic::AtomicUsize::new(0),
+                    cooldown_seconds: cfg.cooldown_seconds.unwrap_or(10),
+                    max_retries: cfg.max_retries.unwrap_or(2),
+                    active_health_check_interval: cfg.active_health_check_interval.unwrap_or(0),
                 };
 
                 rules.push(ParsedRoute {

@@ -294,6 +294,7 @@ impl Service<Request<SrvBody>> for RouterService {
         // `async` block without borrowing `self`.
         let router = Arc::clone(&self.router);
         let client = self.client.clone();
+        let config = Arc::clone(&self.config);
         let server_name = self.config.static_name.unwrap_or("unknown");
         let jwt_token = self.jwt_token.clone();
 
@@ -302,25 +303,51 @@ impl Service<Request<SrvBody>> for RouterService {
             // we can freely mutate headers, URI, and extensions.
             let (mut parts, body) = req.into_parts();
 
+            // ── Health Endpoint ──────────────────────────────────────
+            if parts.uri.path() == "/health" && parts.method == hyper::Method::GET {
+                if config.parsed_routes.is_empty() {
+                    return Ok(build_error_response(
+                        r#"{"status": "healthy", "message": "no routes configured"}"#,
+                        StatusCode::OK,
+                    ));
+                }
+
+                let mut any_alive = false;
+                for route in &config.parsed_routes {
+                    for node in &route.target.upstreams {
+                        if node.is_available(route.target.cooldown_seconds) {
+                            any_alive = true;
+                            break;
+                        }
+                    }
+                    if any_alive {
+                        break;
+                    }
+                }
+
+                if any_alive {
+                    return Ok(build_error_response(
+                        r#"{"status": "healthy", "message": "nodes available"}"#,
+                        StatusCode::OK,
+                    ));
+                } else {
+                    return Ok(build_error_response(
+                        r#"{"status": "unhealthy", "message": "no upstream nodes available"}"#,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    ));
+                }
+            }
+
             // ── Stage 1: IP Address Management ───────────────────────
-            // The `ConnectionHandler` layer stores the peer's `SocketAddr`
-            // in the request extensions. We extract it and propagate the
-            // client IP as `X-Real-IP` so upstream services know the true
-            // origin of the request.
-            if let Some(addr) = parts.extensions.get::<std::net::SocketAddr>() {
+            let client_addr = parts.extensions.get::<std::net::SocketAddr>().copied();
+            if let Some(addr) = client_addr {
                 let ip_str = addr.ip().to_string();
                 if let Ok(hv) = header::HeaderValue::from_str(&ip_str) {
                     parts.headers.insert("X-Real-IP", hv);
                 }
-                // X-Forwarded-For logic
             }
 
             // ── Stage 2: Route Lookup ────────────────────────────────
-            // Query the radix-tree router with the request path. The
-            // `matchit::Match` returned on success contains:
-            //   - `value` → the `ParsedRoute` with upstream URI, allowed
-            //                roles, prefix, etc.
-            //   - `params` → captured wildcard segments (e.g. `rest`).
             let path = parts.uri.path();
             let matched = match router.at(path) {
                 Ok(m) => m,
@@ -329,15 +356,8 @@ impl Service<Request<SrvBody>> for RouterService {
             let route_info = matched.value;
 
             // ── Stage 3: Role-Based Access Control (RBAC) ────────────
-            // If the route defines `allowed_roles`, we check whether the
-            // user possesses at least one of them. The roles are stored as
-            // `Arc<Vec<UserRole>>` in the request extensions, populated
-            // earlier by the `ConnectionHandler` from the client certificate
-            // OIDs or another authentication mechanism.
             if !route_info.allowed_roles.is_empty() {
-                // We look for the Vec<UserRole> that the ConnectionHandler set in the request extensions.
                 let user_roles = parts.extensions.get::<Arc<Vec<UserRole>>>();
-
                 let is_authorized = match user_roles {
                     Some(roles) => roles.iter().any(|r| route_info.allowed_roles.contains(r)),
                     None => false,
@@ -352,131 +372,176 @@ impl Service<Request<SrvBody>> for RouterService {
                 }
             }
 
-            // ── Stage 4: URI Reconstruction ──────────────────────────
-            // Build the full upstream path-and-query string by:
-            //   a) Starting with the backend base path (trailing `/` trimmed).
-            //   b) Appending the captured `*rest` wildcard segment, if any.
-            //   c) Appending the original query string, if present.
-            // Finally, we reassemble a `Uri` using the upstream's scheme
-            // and authority combined with the newly constructed path+query.
+            // Capture request components for retries
+            let original_method = parts.method.clone();
+            let mut original_headers = parts.headers.clone();
 
-            // LOAD BALANCING: Determine the specific backend node for this request.
-            let client_addr = parts.extensions.get::<std::net::SocketAddr>();
-            let upstream_node = route_info.target.next_upstream(client_addr);
-            let backend_base_uri = &upstream_node.uri;
-
-            // Increment the connection counter for LeastConnections
-            upstream_node
-                .active_connections
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-            // To safely decrement after the future completes (even on panic or cancellation),
-            // we create a custom drop guard referencing the specific node via the `target` Arc.
-            struct ConnectionGuard {
-                target: Arc<crate::configuration::RouteTarget>,
-                uri: Uri,
-            }
-            impl Drop for ConnectionGuard {
-                fn drop(&mut self) {
-                    if let Some(node) = self.target.upstreams.iter().find(|n| n.uri == self.uri) {
-                        // Prevent underflow
-                        let current = node
-                            .active_connections
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if current > 0 {
-                            node.active_connections
-                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            // ── Cascading Router Protection ──────────────────────────
+            let mut max_forwards = 10;
+            if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS) {
+                if let Ok(mf_str) = mf_val.to_str() {
+                    if let Ok(mut mf) = mf_str.parse::<u8>() {
+                        if mf == 0 {
+                            warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
+                            return Ok(build_error_response(
+                                "Loop Detected",
+                                StatusCode::LOOP_DETECTED,
+                            ));
                         }
+                        mf -= 1;
+                        max_forwards = mf;
                     }
                 }
             }
-
-            let _conn_guard = ConnectionGuard {
-                target: route_info.target.clone(),
-                uri: backend_base_uri.clone(),
-            };
-
-            let mut pq_string = String::with_capacity(64);
-            pq_string.push_str(backend_base_uri.path().trim_end_matches('/'));
-
-            // Append the sub-path captured by the `*rest` wildcard param.
-            if let Some(rest) = matched.params.get("rest") {
-                if !rest.starts_with('/') {
-                    pq_string.push('/');
-                }
-                pq_string.push_str(rest);
-            } else if pq_string.is_empty() {
-                // Ensure the path is never empty — at minimum it is `/`.
-                pq_string.push('/');
-            }
-
-            // Preserve the original query string verbatim.
-            if let Some(query) = parts.uri.query() {
-                pq_string.push('?');
-                pq_string.push_str(query);
-            }
-
-            // Re-assemble the URI from the upstream's scheme + authority
-            // and the freshly built path-and-query.
-            let mut uri_parts = backend_base_uri.clone().into_parts();
-            uri_parts.path_and_query = Some(
-                pq_string
-                    .parse::<PathAndQuery>()
-                    .map_err(|e| SrvError::from(format!("Invalid PathAndQuery: {e}")))?,
+            original_headers.insert(
+                header::MAX_FORWARDS,
+                header::HeaderValue::from(max_forwards as u16),
             );
 
-            parts.uri = Uri::from_parts(uri_parts)
-                .map_err(|e| SrvError::from(format!("URI Build Error: {e}")))?;
-
-            // ── Stage 5: Header Management & Forwarding ──────────────
-
-            // HTTP/3 (QUIC) is not natively supported by the outbound `hyper`
-            // client. If the incoming request is HTTP/3, we must downgrade
-            // it to HTTP/2 or HTTP/1.1 before handing it over to `client.request()`.
-            if parts.version == hyper::Version::HTTP_3 {
-                parts.version = hyper::Version::HTTP_2;
-            }
-
-            // Strip all hop-by-hop headers that are meaningful only for
-            // the client-to-proxy leg (RFC 7230 §6.1).
+            // Strip hop-by-hop headers ONCE
             for h in &HOP_BY_HOP_HEADERS {
-                parts.headers.remove(h);
+                original_headers.remove(h);
             }
 
-            // Set the `Host` header to the upstream's authority so that
-            // virtual-host routing on the backend works correctly.
-            if let Some(auth) = parts.uri.authority() {
-                if let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
-                    parts.headers.insert(header::HOST, host_val);
-                }
+            if let Some(hv) = &jwt_token {
+                original_headers.insert(header::AUTHORIZATION, hv.clone());
             }
 
-            // Inject the pre-formatted JWT bearer token when configured.
-            if let Some(hv) = jwt_token {
-                parts.headers.insert(header::AUTHORIZATION, hv);
-            }
+            let original_version = if parts.version == hyper::Version::HTTP_3 {
+                hyper::Version::HTTP_2
+            } else {
+                parts.version
+            };
 
-            // Box-erase the request body so it matches the client's
-            // expected body type (`ServiceRespBody`), then re-assemble
-            // the proxy request from parts + body.
-            let boxed_body: ServiceRespBody = body.map_err(SrvError::from).boxed();
-            let proxy_req = Request::from_parts(parts, boxed_body);
-
-            // Dispatch the request to the upstream backend and stream the
-            // response back. On failure, return a synthetic 502 Bad Gateway
-            // instead of propagating the error — the client should receive
-            // a well-formed HTTP response even when the backend is unreachable.
-            match client.request(proxy_req).await {
-                Ok(res) => {
-                    let (res_parts, res_body) = res.into_parts();
-                    Ok(Response::from_parts(
-                        res_parts,
-                        res_body.map_err(SrvError::from).boxed(),
-                    ))
-                }
+            // Buffer the request body entirely to allow retrying proxy connections safely
+            let req_body_bytes = match body.collect().await {
+                Ok(c) => c.to_bytes(),
                 Err(e) => {
-                    error!("{}: Backend connection failed: {}", server_name, e);
-                    Ok(build_error_response("Bad Gateway", StatusCode::BAD_GATEWAY))
+                    error!("{}: Failed to read request body: {}", server_name, e);
+                    return Ok(build_error_response("Bad Request", StatusCode::BAD_REQUEST));
+                }
+            };
+
+            let mut failed_nodes = Vec::new();
+            let max_retries = route_info.target.max_retries;
+            let mut attempts = 0;
+
+            loop {
+                attempts += 1;
+                let mut current_headers = original_headers.clone();
+
+                // ── Stage 4: URI Reconstruction ──────────────────────────
+                let upstream_node = route_info
+                    .target
+                    .next_upstream(client_addr.as_ref(), &failed_nodes);
+                let backend_base_uri = &upstream_node.uri;
+
+                upstream_node
+                    .active_connections
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                struct ConnectionGuard {
+                    target: Arc<crate::configuration::RouteTarget>,
+                    uri: Uri,
+                }
+                impl Drop for ConnectionGuard {
+                    fn drop(&mut self) {
+                        if let Some(node) = self.target.upstreams.iter().find(|n| n.uri == self.uri)
+                        {
+                            let current = node
+                                .active_connections
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if current > 0 {
+                                node.active_connections
+                                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+
+                let _conn_guard = ConnectionGuard {
+                    target: route_info.target.clone(),
+                    uri: backend_base_uri.clone(),
+                };
+
+                let mut pq_string = String::with_capacity(64);
+                pq_string.push_str(backend_base_uri.path().trim_end_matches('/'));
+
+                if let Some(rest) = matched.params.get("rest") {
+                    if !rest.starts_with('/') {
+                        pq_string.push('/');
+                    }
+                    pq_string.push_str(rest);
+                } else if pq_string.is_empty() {
+                    pq_string.push('/');
+                }
+
+                if let Some(query) = parts.uri.query() {
+                    pq_string.push('?');
+                    pq_string.push_str(query);
+                }
+
+                let mut uri_parts = backend_base_uri.clone().into_parts();
+                uri_parts.path_and_query = Some(
+                    pq_string
+                        .parse::<PathAndQuery>()
+                        .map_err(|e| SrvError::from(format!("Invalid PathAndQuery: {e}")))?,
+                );
+
+                let target_uri = Uri::from_parts(uri_parts)
+                    .map_err(|e| SrvError::from(format!("URI Build Error: {e}")))?;
+
+                // ── Stage 5: Header Management & Forwarding ──────────────
+                if let Some(auth) = target_uri.authority() {
+                    if let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
+                        current_headers.insert(header::HOST, host_val);
+                    }
+                }
+
+                let boxed_body: ServiceRespBody = Full::new(req_body_bytes.clone())
+                    .map_err(SrvError::from)
+                    .boxed();
+
+                let mut proxy_req = Request::new(boxed_body);
+                *proxy_req.method_mut() = original_method.clone();
+                *proxy_req.uri_mut() = target_uri;
+                *proxy_req.version_mut() = original_version;
+                *proxy_req.headers_mut() = current_headers;
+
+                match client.request(proxy_req).await {
+                    Ok(res) => {
+                        let (res_parts, res_body) = res.into_parts();
+                        return Ok(Response::from_parts(
+                            res_parts,
+                            res_body.map_err(SrvError::from).boxed(),
+                        ));
+                    }
+                    Err(e) => {
+                        error!(
+                            "{}: Backend connection failed to {}: {}",
+                            server_name, backend_base_uri, e
+                        );
+
+                        route_info.target.mark_dead(backend_base_uri);
+                        failed_nodes.push(backend_base_uri.clone());
+
+                        if attempts <= max_retries {
+                            warn!(
+                                "{}: Retrying request... (Attempt {}/{})",
+                                server_name, attempts, max_retries
+                            );
+                            continue;
+                        } else {
+                            error!(
+                                "{}: Max retries reached. Returning 502 Bad Gateway.",
+                                server_name
+                            );
+                            return Ok(build_error_response(
+                                "Bad Gateway",
+                                StatusCode::BAD_GATEWAY,
+                            ));
+                        }
+                    }
                 }
             }
         })

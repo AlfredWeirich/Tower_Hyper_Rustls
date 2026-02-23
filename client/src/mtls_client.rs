@@ -498,7 +498,7 @@ async fn do_request_h2(
     // Convert body bytes to a UTF-8 String (error if invalid encoding)
     let body_str =
         String::from_utf8(body_bytes.to_vec()).context("Response body was not valid UTF-8")?;
-
+    trace!("Response body: {}", body_str);
     Ok(body_str)
 }
 

@@ -8,7 +8,7 @@ use std::{
 // === External Crates ===
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{header, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode, header};
 use tower::Service;
 
 // === Internal Modules ===
@@ -41,18 +41,66 @@ impl Service<Request<SrvBody>> for EchoService {
             match (req.method(), req.uri().path()) {
                 // ── GET / ────────────────────────────────────────────
                 (&hyper::Method::GET, "/") => {
-                    // // Offload heavy CPU work to the blocking thread pool
-                    // tokio::task::spawn_blocking(move || {
-                    //     load_test_echo_sync()
-                    // })
-                    // .await
-                    // .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
+                    // 1. Extract query string
+                    let query = req.uri().query().unwrap_or("none");
 
-                    let body: ServiceRespBody = Full::new(Bytes::from_static(b"Echo!"))
+                    // 2. Offload heavy CPU work (commented out for high-performance benchmarking)
+                    // tokio::task::spawn_blocking(move || load_test_echo_sync())
+                    //     .await
+                    //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
+
+                    // 3. Create the message including the query
+                    let msg = format!("Echo /! Query: {} from Server: {server_name}\n", query);
+
+                    let body: ServiceRespBody =
+                        Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
+
+                    let response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .body(body)
+                        .unwrap();
+
+                    Ok(response)
+                }
+
+                // ── GET /name ────────────────────────────────────────────
+                (&hyper::Method::GET, "/name") => {
+                    // 1. Extract query string
+                    let query = req.uri().query().unwrap_or("none");
+
+                    // 2. Offload heavy CPU work (commented out for high-performance benchmarking)
+                    // tokio::task::spawn_blocking(move || load_test_echo_sync())
+                    //     .await
+                    //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
+
+                    // 3. Create the message including the query
+                    let msg = format!("Echo /name! Query: {} from Server: {server_name}\n", query);
+
+                    let body: ServiceRespBody =
+                        Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
+
+                    let response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .body(body)
+                        .unwrap();
+
+                    Ok(response)
+                }
+
+                // ── GET /health ──────────────────────────────────────
+                (&hyper::Method::GET, "/health") => {
+                    let msg = r#"{"status": "healthy", "message": "echo service is alive"}"#;
+                    let body = Full::new(Bytes::from_static(msg.as_bytes()))
                         .map_err(SrvError::from)
                         .boxed();
-
-                    Ok(Response::new(body))
+                    let response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(body)
+                        .unwrap();
+                    Ok(response)
                 }
 
                 // ── GET /help ────────────────────────────────────────
@@ -64,10 +112,10 @@ impl Service<Request<SrvBody>> for EchoService {
 
                 // ── POST / ──────────────────────────────────────────
                 (&hyper::Method::POST, "/") => {
-                    let content_type = req.headers()
-                        .get(header::CONTENT_TYPE)
-                        .cloned()
-                        .unwrap_or(header::HeaderValue::from_static("application/octet-stream"));
+                    let content_type =
+                        req.headers().get(header::CONTENT_TYPE).cloned().unwrap_or(
+                            header::HeaderValue::from_static("application/octet-stream"),
+                        );
 
                     let body_bytes = req.collect().await?.to_bytes();
                     let body = Full::new(body_bytes).map_err(SrvError::from).boxed();
@@ -87,10 +135,11 @@ impl Service<Request<SrvBody>> for EchoService {
 
                     let final_bytes = if let Some(pos) = trimmed.rfind('}') {
                         let mut new_body = trimmed[..pos].to_string();
-                        new_body.push_str(r#", "note": "from echo" }"#);
+                        let msg = format!(", \"note\": \"from echo name: {}\" }}", server_name);
+                        new_body.push_str(&msg);
                         Bytes::from(new_body)
                     } else {
-                        body_bytes 
+                        body_bytes
                     };
 
                     let response = Response::builder()
@@ -119,7 +168,7 @@ impl Service<Request<SrvBody>> for EchoService {
     }
 }
 
-/// CPU-intensive workload. 
+/// CPU-intensive workload.
 /// Since we are in a 'sync' function on a blocking thread, we don't need .await or sleep.
 #[allow(dead_code)]
 fn load_test_echo_sync() -> String {

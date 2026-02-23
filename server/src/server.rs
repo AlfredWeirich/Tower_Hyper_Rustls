@@ -90,7 +90,7 @@ use server::{
 };
 
 use http_body_util::BodyExt;
-use hyper::Response;
+use hyper::{Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
 use rustls::ServerConfig as RustlsServerConfig;
@@ -319,6 +319,95 @@ async fn start_single_server(
     cancel_token: CancellationToken,
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
 ) {
+    if server_config.service == ServiceType::Router {
+        if let Some(router_params) = &server_config.router_params {
+            let root_store = common::build_root_store(&router_params.ssl_root_certificate);
+            let is_mtls = router_params.authentication == AuthenticationMethod::ClientCert;
+            let tls_client_config = if is_mtls {
+                common::build_tls_client_config(
+                    root_store,
+                    router_params.ssl_client_certificate.as_deref(),
+                    router_params.ssl_client_key.as_deref(),
+                )
+            } else {
+                common::build_tls_client_config(root_store, None, None)
+            };
+
+            let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(tls_client_config)
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build();
+
+            let client = hyper_util::client::legacy::Client::builder(TokioExecutor::new())
+                .pool_idle_timeout(Duration::from_secs(90))
+                .build(https_connector);
+
+            let proto_str = match router_params.protocol {
+                Protocol::Https => "https",
+                Protocol::Http => "http",
+            };
+
+            for route in &server_config.parsed_routes {
+                let interval = route.target.active_health_check_interval;
+                if interval > 0 {
+                    for (idx, node) in route.target.upstreams.iter().enumerate() {
+                        let client = client.clone();
+                        let token = cancel_token.clone();
+                        let uri_str = format!(
+                            "{}://{}/health",
+                            proto_str,
+                            node.uri.authority().unwrap().as_str()
+                        );
+                        let uri = uri_str.parse::<hyper::Uri>().unwrap();
+                        let server_name = server_config.static_name.unwrap_or("unknown");
+                        let interval_dur = Duration::from_secs(interval);
+                        let target_arc = route.target.clone();
+
+                        tokio::spawn(async move {
+                            let mut ticker = tokio::time::interval(interval_dur);
+                            // Set tick behavior so it doesn't burst if delayed
+                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                            loop {
+                                tokio::select! {
+                                    _ = token.cancelled() => break,
+                                    _ = ticker.tick() => {
+                                        let req = Request::builder()
+                                            .method(hyper::Method::GET)
+                                            .uri(uri.clone())
+                                            .body(http_body_util::Empty::<bytes::Bytes>::new().map_err(|e| match e {}).boxed())
+                                            .unwrap();
+                                        match client.request(req).await {
+                                            Ok(resp) if resp.status() == StatusCode::OK => {
+                                                if !target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                    trace!("{}: Health check recovered '{}'", server_name, uri);
+                                                    target_arc.upstreams[idx].is_alive.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                    trace!("{}: Health check failed for '{}': {}", server_name, uri, e);
+                                                    target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                }
+                                            }
+                                            Ok(resp) => {
+                                                if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                    trace!("{}: Health check failed status {} for '{}'", server_name, resp.status(), uri);
+                                                    target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let server_addr = match server_config.get_server_ip() {
         Ok(addr) => addr,
         Err(e) => {

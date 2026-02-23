@@ -53,6 +53,7 @@ x509-parser = "0.18.0"
 h3 = { git = "https://github.com/hyperium/h3", rev = "704b37a2e82cf4c8de379ec779dbc2a23bfcb9a1" }
 h3-quinn = { git = "https://github.com/hyperium/h3", rev = "704b37a2e82cf4c8de379ec779dbc2a23bfcb9a1" }
 arc-swap = "1.8.2"
+fastrand = "2.3.0"
 
 [[bin]]
 name = "server"

@@ -359,7 +359,43 @@ impl Service<Request<SrvBody>> for RouterService {
             //   c) Appending the original query string, if present.
             // Finally, we reassemble a `Uri` using the upstream's scheme
             // and authority combined with the newly constructed path+query.
-            let backend_base_uri = &route_info.upstream_uri;
+
+            // LOAD BALANCING: Determine the specific backend node for this request.
+            let client_addr = parts.extensions.get::<std::net::SocketAddr>();
+            let upstream_node = route_info.target.next_upstream(client_addr);
+            let backend_base_uri = &upstream_node.uri;
+
+            // Increment the connection counter for LeastConnections
+            upstream_node
+                .active_connections
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            // To safely decrement after the future completes (even on panic or cancellation),
+            // we create a custom drop guard referencing the specific node via the `target` Arc.
+            struct ConnectionGuard {
+                target: Arc<crate::configuration::RouteTarget>,
+                uri: Uri,
+            }
+            impl Drop for ConnectionGuard {
+                fn drop(&mut self) {
+                    if let Some(node) = self.target.upstreams.iter().find(|n| n.uri == self.uri) {
+                        // Prevent underflow
+                        let current = node
+                            .active_connections
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if current > 0 {
+                            node.active_connections
+                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+
+            let _conn_guard = ConnectionGuard {
+                target: route_info.target.clone(),
+                uri: backend_base_uri.clone(),
+            };
+
             let mut pq_string = String::with_capacity(64);
             pq_string.push_str(backend_base_uri.path().trim_end_matches('/'));
 
@@ -393,6 +429,14 @@ impl Service<Request<SrvBody>> for RouterService {
                 .map_err(|e| SrvError::from(format!("URI Build Error: {e}")))?;
 
             // ── Stage 5: Header Management & Forwarding ──────────────
+
+            // HTTP/3 (QUIC) is not natively supported by the outbound `hyper`
+            // client. If the incoming request is HTTP/3, we must downgrade
+            // it to HTTP/2 or HTTP/1.1 before handing it over to `client.request()`.
+            if parts.version == hyper::Version::HTTP_3 {
+                parts.version = hyper::Version::HTTP_2;
+            }
+
             // Strip all hop-by-hop headers that are meaningful only for
             // the client-to-proxy leg (RFC 7230 §6.1).
             for h in &HOP_BY_HOP_HEADERS {

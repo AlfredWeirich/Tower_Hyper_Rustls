@@ -206,11 +206,86 @@ pub struct ServerConfig {
 /// A single reverse-proxy route definition from the TOML config.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RouteConfig {
-    /// The upstream backend address (e.g. `"127.0.0.1:8080"`).
-    pub upstream: String,
+    /// The upstream backend addresses (e.g. `["127.0.0.1:8080", "127.0.0.1:8081"]`).
+    pub upstreams: Vec<String>,
+    /// The load balancing strategy to use for this route.
+    #[serde(default)]
+    pub strategy: LbStrategy,
     /// Roles permitted to access this route. Empty means unrestricted.
     #[serde(default)]
     pub allowed_roles: Vec<UserRole>,
+}
+
+/// A load balancing strategy for downstream forwarding.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+pub enum LbStrategy {
+    #[default]
+    RoundRobin,
+    Random,
+    LeastConnections,
+    Sticky,
+}
+
+/// A single upstream node within a load-balanced route target.
+#[derive(Debug)]
+pub struct UpstreamNode {
+    /// The parsed URI for this upstream node.
+    pub uri: Uri,
+    /// Number of active connections to this upstream (used for LeastConnections).
+    pub active_connections: std::sync::atomic::AtomicUsize,
+}
+
+/// The load-balanced target configuration for a parsed route.
+#[derive(Debug)]
+pub struct RouteTarget {
+    /// The available upstream nodes.
+    pub upstreams: Vec<UpstreamNode>,
+    /// The strategy to distribute requests among `upstreams`.
+    pub strategy: LbStrategy,
+    /// Atomic counter used for RoundRobin selection.
+    pub rr_counter: std::sync::atomic::AtomicUsize,
+}
+
+impl RouteTarget {
+    /// Selects the next upstream node based on the configured load-balancing strategy.
+    pub fn next_upstream(&self, client_ip: Option<&std::net::SocketAddr>) -> &UpstreamNode {
+        if self.upstreams.len() == 1 {
+            return &self.upstreams[0];
+        }
+
+        match self.strategy {
+            LbStrategy::RoundRobin => {
+                let count = self
+                    .rr_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                &self.upstreams[count % self.upstreams.len()]
+            }
+            LbStrategy::Random => {
+                let index = fastrand::usize(..self.upstreams.len());
+                &self.upstreams[index]
+            }
+            LbStrategy::LeastConnections => self
+                .upstreams
+                .iter()
+                .min_by_key(|node| {
+                    node.active_connections
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .unwrap_or(&self.upstreams[0]),
+            LbStrategy::Sticky => {
+                let hash = if let Some(addr) = client_ip {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    addr.ip().hash(&mut hasher);
+                    hasher.finish() as usize
+                } else {
+                    // Fallback to random if no IP is provided
+                    fastrand::usize(..)
+                };
+                &self.upstreams[hash % self.upstreams.len()]
+            }
+        }
+    }
 }
 
 /// A processed reverse-proxy route ready for use by the router.
@@ -220,8 +295,8 @@ pub struct RouteConfig {
 pub struct ParsedRoute {
     /// The path prefix that triggers this route (e.g. `"/api"`).
     pub prefix: String,
-    /// The fully qualified upstream URI (e.g. `https://127.0.0.1:8080`).
-    pub upstream_uri: Uri,
+    /// The load-balanced target composed of upstreams and a strategy.
+    pub target: Arc<RouteTarget>,
     /// Roles permitted to access this route.
     pub allowed_roles: Vec<UserRole>,
 }
@@ -661,13 +736,34 @@ impl ServerConfig {
             };
 
             for (prefix, cfg) in map {
-                let uri = format!("{proto_str}://{}", cfg.upstream)
-                    .parse::<Uri>()
-                    .with_context(|| format!("Invalid upstream URI: {}", cfg.upstream))?;
+                if cfg.upstreams.is_empty() {
+                    return Err(Error::msg(format!(
+                        "Configuration error: Route '{}' has no upstreams defined.",
+                        prefix
+                    )));
+                }
+
+                let mut upstream_nodes = Vec::with_capacity(cfg.upstreams.len());
+                for upstream in &cfg.upstreams {
+                    let uri = format!("{proto_str}://{upstream}")
+                        .parse::<Uri>()
+                        .with_context(|| format!("Invalid upstream URI: {upstream}"))?;
+
+                    upstream_nodes.push(UpstreamNode {
+                        uri,
+                        active_connections: std::sync::atomic::AtomicUsize::new(0),
+                    });
+                }
+
+                let target = RouteTarget {
+                    upstreams: upstream_nodes,
+                    strategy: cfg.strategy.clone(),
+                    rr_counter: std::sync::atomic::AtomicUsize::new(0),
+                };
 
                 rules.push(ParsedRoute {
                     prefix: prefix.clone(),
-                    upstream_uri: uri,
+                    target: std::sync::Arc::new(target),
                     allowed_roles: cfg.allowed_roles.clone(),
                 });
             }

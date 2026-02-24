@@ -341,6 +341,11 @@ async fn start_single_server(
 
             let client = common::client::build_hyper_client(tls_client_config, pool_config);
 
+            let jwt_token = router_params
+                .jwt
+                .as_ref()
+                .and_then(|t| hyper::header::HeaderValue::from_str(&format!("Bearer {}", t)).ok());
+
             let proto_str = match router_params.protocol {
                 Protocol::Https => "https",
                 Protocol::Http => "http",
@@ -361,6 +366,7 @@ async fn start_single_server(
                         let server_name = server_config.static_name.unwrap_or("unknown");
                         let interval_dur = Duration::from_secs(interval);
                         let target_arc = route.target.clone();
+                        let auth_header = jwt_token.clone();
 
                         tokio::spawn(async move {
                             let mut ticker = tokio::time::interval(interval_dur);
@@ -370,9 +376,15 @@ async fn start_single_server(
                                 tokio::select! {
                                     _ = token.cancelled() => break,
                                     _ = ticker.tick() => {
-                                        let req = Request::builder()
+                                        let mut req_builder = Request::builder()
                                             .method(hyper::Method::GET)
-                                            .uri(uri.clone())
+                                            .uri(uri.clone());
+
+                                        if let Some(ref header_val) = auth_header {
+                                            req_builder = req_builder.header(hyper::header::AUTHORIZATION, header_val.clone());
+                                        }
+
+                                        let req = req_builder
                                             .body(http_body_util::Empty::<bytes::Bytes>::new().map_err(|e| match e {}).boxed())
                                             .unwrap();
                                         match client.request(req).await {

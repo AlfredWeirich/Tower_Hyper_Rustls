@@ -31,7 +31,7 @@ use hyper::{
     Request, Response, StatusCode, header,
     http::uri::{PathAndQuery, Uri},
 };
-use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use hyper_util::client::legacy::Client;
 use matchit::Router;
 use tower::Service;
 use tracing::{error, warn};
@@ -95,7 +95,7 @@ pub struct RouterService {
     /// presents a client certificate (mTLS). The client maintains an internal
     /// connection pool with a configurable idle timeout.
     client: Client<
-        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         ServiceRespBody,
     >,
 
@@ -200,19 +200,14 @@ impl RouterService {
                 build_tls_client_config(root_store, None, None)
             };
 
-            // Build the HTTPS connector and attach it to a pooled Hyper
-            // `Client`. The idle-timeout prevents stale connections from
-            // lingering indefinitely in the pool.
-            let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_or_http()
-                .enable_http1()
-                .enable_http2()
-                .build();
+            // Use the shared client builder from the `common` crate
+            let pool_config = common::client::ClientPoolConfig {
+                idle_timeout: Some(std::time::Duration::from_secs(90)),
+                max_idle_per_host: Some(1024), // default or adjusted as needed
+                http2_only: false,
+            };
 
-            Client::builder(TokioExecutor::new())
-                .pool_idle_timeout(std::time::Duration::from_secs(90))
-                .build(https_connector)
+            common::client::build_hyper_client(tls_client_config, pool_config)
         };
 
         // ── 3. JWT bearer token preparation ───────────────────────────
@@ -229,6 +224,166 @@ impl RouterService {
             config,
             jwt_token,
         }
+    }
+
+    /// Handles requests to the `/health` endpoint.
+    ///
+    /// Returns HTTP 200 OK if at least one upstream node is available across all
+    /// configured routes. Otherwise, returns HTTP 503 Service Unavailable.
+    fn handle_health_check(&self) -> Result<Response<ServiceRespBody>, SrvError> {
+        let config = &self.config;
+        if config.parsed_routes.is_empty() {
+            return Ok(build_error_response(
+                r#"{"status": "healthy", "message": "no routes configured"}"#,
+                StatusCode::OK,
+            ));
+        }
+
+        let mut any_alive = false;
+        for route in &config.parsed_routes {
+            for node in &route.target.upstreams {
+                if node.is_available(route.target.cooldown_seconds) {
+                    any_alive = true;
+                    break;
+                }
+            }
+            if any_alive {
+                break;
+            }
+        }
+
+        if any_alive {
+            Ok(build_error_response(
+                r#"{"status": "healthy", "message": "nodes available"}"#,
+                StatusCode::OK,
+            ))
+        } else {
+            Ok(build_error_response(
+                r#"{"status": "unhealthy", "message": "no upstream nodes available"}"#,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ))
+        }
+    }
+
+    /// Extracts the client's IP from request extensions and injects it as the `X-Real-IP` header.
+    fn inject_real_ip(parts: &mut hyper::http::request::Parts) {
+        let client_addr = parts.extensions.get::<std::net::SocketAddr>().copied();
+        if let Some(addr) = client_addr {
+            let ip_str = addr.ip().to_string();
+            if let Ok(hv) = header::HeaderValue::from_str(&ip_str) {
+                parts.headers.insert("X-Real-IP", hv);
+            }
+        }
+    }
+
+    /// Enforces Role-Based Access Control (RBAC).
+    ///
+    /// Checks if the client's roles (extracted from extensions) intersect with the
+    /// `allowed_roles` defined for the matched route. Returns `Ok(())` if authorized,
+    /// or an HTTP 403 Forbidden response otherwise.
+    fn enforce_rbac(
+        parts: &hyper::http::request::Parts,
+        route_info: &ParsedRoute,
+        server_name: &str,
+    ) -> Result<(), Response<ServiceRespBody>> {
+        if !route_info.allowed_roles.is_empty() {
+            let user_roles = parts.extensions.get::<Arc<Vec<UserRole>>>();
+            let is_authorized = match user_roles {
+                Some(roles) => roles.iter().any(|r| route_info.allowed_roles.contains(r)),
+                None => false,
+            };
+
+            if !is_authorized {
+                warn!(
+                    "{}: Forbidden for roles {:?} at {}",
+                    server_name,
+                    user_roles,
+                    parts.uri.path()
+                );
+                return Err(build_error_response("Forbidden", StatusCode::FORBIDDEN));
+            }
+        }
+        Ok(())
+    }
+
+    /// Cleans and prepares HTTP headers for upstream forwarding.
+    ///
+    /// - Protects against routing loops by decrementing `Max-Forwards`.
+    /// - Strips hop-by-hop headers defined in RFC 7230.
+    /// - Injects the JWT `Authorization` header if configured.
+    fn prepare_proxy_headers(
+        original_headers: &mut hyper::HeaderMap,
+        server_name: &str,
+        jwt_token: Option<&hyper::header::HeaderValue>,
+    ) -> Result<(), Response<ServiceRespBody>> {
+        // ── Cascading Router Protection ──────────────────────────
+        let mut max_forwards = 10;
+        if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS) {
+            if let Ok(mf_str) = mf_val.to_str() {
+                if let Ok(mut mf) = mf_str.parse::<u8>() {
+                    if mf == 0 {
+                        warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
+                        return Err(build_error_response(
+                            "Loop Detected",
+                            StatusCode::LOOP_DETECTED,
+                        ));
+                    }
+                    mf -= 1;
+                    max_forwards = mf;
+                }
+            }
+        }
+        original_headers.insert(
+            header::MAX_FORWARDS,
+            header::HeaderValue::from(max_forwards as u16),
+        );
+
+        // Strip hop-by-hop headers ONCE
+        for h in &HOP_BY_HOP_HEADERS {
+            original_headers.remove(h);
+        }
+
+        if let Some(hv) = jwt_token {
+            original_headers.insert(header::AUTHORIZATION, hv.clone());
+        }
+
+        Ok(())
+    }
+
+    /// Reconstructs the Request URI for the upstream server.
+    ///
+    /// Combines the backend's base URI with the matched sub-path (`*rest`) and
+    /// preserves any original query parameters.
+    fn build_upstream_uri(
+        backend_base_uri: &Uri,
+        matched_params: &matchit::Params,
+        original_uri: &Uri,
+    ) -> Result<Uri, SrvError> {
+        let mut pq_string = String::with_capacity(64);
+        pq_string.push_str(backend_base_uri.path().trim_end_matches('/'));
+
+        if let Some(rest) = matched_params.get("rest") {
+            if !rest.starts_with('/') {
+                pq_string.push('/');
+            }
+            pq_string.push_str(rest);
+        } else if pq_string.is_empty() {
+            pq_string.push('/');
+        }
+
+        if let Some(query) = original_uri.query() {
+            pq_string.push('?');
+            pq_string.push_str(query);
+        }
+
+        let mut uri_parts = backend_base_uri.clone().into_parts();
+        uri_parts.path_and_query = Some(
+            pq_string
+                .parse::<PathAndQuery>()
+                .map_err(|e| SrvError::from(format!("Invalid PathAndQuery: {e}")))?,
+        );
+
+        Uri::from_parts(uri_parts).map_err(|e| SrvError::from(format!("URI Build Error: {e}")))
     }
 }
 
@@ -294,9 +449,11 @@ impl Service<Request<SrvBody>> for RouterService {
         // `async` block without borrowing `self`.
         let router = Arc::clone(&self.router);
         let client = self.client.clone();
-        let config = Arc::clone(&self.config);
         let server_name = self.config.static_name.unwrap_or("unknown");
         let jwt_token = self.jwt_token.clone();
+
+        // Needed to call `&self` methods from the async block
+        let self_clone = self.clone();
 
         Box::pin(async move {
             // Decompose the request into its head (`parts`) and body so
@@ -305,47 +462,12 @@ impl Service<Request<SrvBody>> for RouterService {
 
             // ── Health Endpoint ──────────────────────────────────────
             if parts.uri.path() == "/health" && parts.method == hyper::Method::GET {
-                if config.parsed_routes.is_empty() {
-                    return Ok(build_error_response(
-                        r#"{"status": "healthy", "message": "no routes configured"}"#,
-                        StatusCode::OK,
-                    ));
-                }
-
-                let mut any_alive = false;
-                for route in &config.parsed_routes {
-                    for node in &route.target.upstreams {
-                        if node.is_available(route.target.cooldown_seconds) {
-                            any_alive = true;
-                            break;
-                        }
-                    }
-                    if any_alive {
-                        break;
-                    }
-                }
-
-                if any_alive {
-                    return Ok(build_error_response(
-                        r#"{"status": "healthy", "message": "nodes available"}"#,
-                        StatusCode::OK,
-                    ));
-                } else {
-                    return Ok(build_error_response(
-                        r#"{"status": "unhealthy", "message": "no upstream nodes available"}"#,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                    ));
-                }
+                return self_clone.handle_health_check();
             }
 
             // ── Stage 1: IP Address Management ───────────────────────
             let client_addr = parts.extensions.get::<std::net::SocketAddr>().copied();
-            if let Some(addr) = client_addr {
-                let ip_str = addr.ip().to_string();
-                if let Ok(hv) = header::HeaderValue::from_str(&ip_str) {
-                    parts.headers.insert("X-Real-IP", hv);
-                }
-            }
+            Self::inject_real_ip(&mut parts);
 
             // ── Stage 2: Route Lookup ────────────────────────────────
             let path = parts.uri.path();
@@ -356,55 +478,19 @@ impl Service<Request<SrvBody>> for RouterService {
             let route_info = matched.value;
 
             // ── Stage 3: Role-Based Access Control (RBAC) ────────────
-            if !route_info.allowed_roles.is_empty() {
-                let user_roles = parts.extensions.get::<Arc<Vec<UserRole>>>();
-                let is_authorized = match user_roles {
-                    Some(roles) => roles.iter().any(|r| route_info.allowed_roles.contains(r)),
-                    None => false,
-                };
-
-                if !is_authorized {
-                    warn!(
-                        "{}: Forbidden for roles {:?} at {}",
-                        server_name, user_roles, path
-                    );
-                    return Ok(build_error_response("Forbidden", StatusCode::FORBIDDEN));
-                }
+            if let Err(forbidden_response) = Self::enforce_rbac(&parts, route_info, server_name) {
+                return Ok(forbidden_response);
             }
 
+            // ── Stage 4: Header Prep ─────────────────────────────────
             // Capture request components for retries
             let original_method = parts.method.clone();
             let mut original_headers = parts.headers.clone();
 
-            // ── Cascading Router Protection ──────────────────────────
-            let mut max_forwards = 10;
-            if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS) {
-                if let Ok(mf_str) = mf_val.to_str() {
-                    if let Ok(mut mf) = mf_str.parse::<u8>() {
-                        if mf == 0 {
-                            warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
-                            return Ok(build_error_response(
-                                "Loop Detected",
-                                StatusCode::LOOP_DETECTED,
-                            ));
-                        }
-                        mf -= 1;
-                        max_forwards = mf;
-                    }
-                }
-            }
-            original_headers.insert(
-                header::MAX_FORWARDS,
-                header::HeaderValue::from(max_forwards as u16),
-            );
-
-            // Strip hop-by-hop headers ONCE
-            for h in &HOP_BY_HOP_HEADERS {
-                original_headers.remove(h);
-            }
-
-            if let Some(hv) = &jwt_token {
-                original_headers.insert(header::AUTHORIZATION, hv.clone());
+            if let Err(err_resp) =
+                Self::prepare_proxy_headers(&mut original_headers, server_name, jwt_token.as_ref())
+            {
+                return Ok(err_resp);
             }
 
             let original_version = if parts.version == hyper::Version::HTTP_3 {
@@ -430,7 +516,7 @@ impl Service<Request<SrvBody>> for RouterService {
                 attempts += 1;
                 let mut current_headers = original_headers.clone();
 
-                // ── Stage 4: URI Reconstruction ──────────────────────────
+                // ── Stage 5: URI Reconstruction ──────────────────────────
                 let upstream_node = route_info
                     .target
                     .next_upstream(client_addr.as_ref(), &failed_nodes);
@@ -464,34 +550,10 @@ impl Service<Request<SrvBody>> for RouterService {
                     uri: backend_base_uri.clone(),
                 };
 
-                let mut pq_string = String::with_capacity(64);
-                pq_string.push_str(backend_base_uri.path().trim_end_matches('/'));
+                let target_uri =
+                    Self::build_upstream_uri(backend_base_uri, &matched.params, &parts.uri)?;
 
-                if let Some(rest) = matched.params.get("rest") {
-                    if !rest.starts_with('/') {
-                        pq_string.push('/');
-                    }
-                    pq_string.push_str(rest);
-                } else if pq_string.is_empty() {
-                    pq_string.push('/');
-                }
-
-                if let Some(query) = parts.uri.query() {
-                    pq_string.push('?');
-                    pq_string.push_str(query);
-                }
-
-                let mut uri_parts = backend_base_uri.clone().into_parts();
-                uri_parts.path_and_query = Some(
-                    pq_string
-                        .parse::<PathAndQuery>()
-                        .map_err(|e| SrvError::from(format!("Invalid PathAndQuery: {e}")))?,
-                );
-
-                let target_uri = Uri::from_parts(uri_parts)
-                    .map_err(|e| SrvError::from(format!("URI Build Error: {e}")))?;
-
-                // ── Stage 5: Header Management & Forwarding ──────────────
+                // ── Stage 6: Forwarding ──────────────────────────────────
                 if let Some(auth) = target_uri.authority() {
                     if let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
                         current_headers.insert(header::HOST, host_val);

@@ -50,7 +50,7 @@ impl Service<Request<SrvBody>> for EchoService {
                     //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
 
                     // 3. Create the message including the query
-                    let msg = format!("Echo /! Query: {} from Server: {server_name}\n", query);
+                    let msg = format!("Echo /! Query: {} from Server: {server_name}", query);
 
                     let body: ServiceRespBody =
                         Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
@@ -75,7 +75,7 @@ impl Service<Request<SrvBody>> for EchoService {
                     //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
 
                     // 3. Create the message including the query
-                    let msg = format!("Echo /name! Query: {} from Server: {server_name}\n", query);
+                    let msg = format!("Echo /name! Query: {} from Server: {server_name}", query);
 
                     let body: ServiceRespBody =
                         Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();

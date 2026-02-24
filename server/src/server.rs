@@ -333,16 +333,13 @@ async fn start_single_server(
                 common::build_tls_client_config(root_store, None, None)
             };
 
-            let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_or_http()
-                .enable_http1()
-                .enable_http2()
-                .build();
+            let pool_config = common::client::ClientPoolConfig {
+                idle_timeout: Some(Duration::from_secs(90)),
+                max_idle_per_host: Some(1024),
+                http2_only: false,
+            };
 
-            let client = hyper_util::client::legacy::Client::builder(TokioExecutor::new())
-                .pool_idle_timeout(Duration::from_secs(90))
-                .build(https_connector);
+            let client = common::client::build_hyper_client(tls_client_config, pool_config);
 
             let proto_str = match router_params.protocol {
                 Protocol::Https => "https",

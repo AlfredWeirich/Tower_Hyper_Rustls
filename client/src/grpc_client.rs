@@ -27,11 +27,7 @@ use clap::{Parser, ValueEnum};
 use futures::{StreamExt, stream::FuturesUnordered};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
-use hyper_rustls::HttpsConnector;
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::TokioExecutor,
-};
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use tracing::{error, trace};
 
 // === Internal Modules ===
@@ -136,44 +132,24 @@ fn validate_cli(cli: &Cli) {
     }
 }
 
-/// Build the appropriate HTTP(S) client based on the protocol.
-fn build_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
-    match cli.security {
-        Protocol::Http => {
-            let root_store = common::build_root_store(&cli.ca);
-            let client_config = common::build_tls_client_config(root_store, None, None);
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(client_config)
-                .https_or_http()
-                .enable_http1()
-                .build();
-            Client::builder(TokioExecutor::new()).build(https)
-        }
-        Protocol::Https | Protocol::Jwt => {
-            let root_store = common::build_root_store(&cli.ca);
-            let tls_client_config = common::build_tls_client_config(root_store, None, None);
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_only()
-                .enable_http1()
-                .build();
-            Client::builder(TokioExecutor::new()).build(https)
+fn build_client(cli: &Cli) -> Client<common::client::HttpsConnector<HttpConnector>, Full<Bytes>> {
+    let root_store = common::build_root_store(&cli.ca);
+    let tls_client_config = match cli.security {
+        Protocol::Http | Protocol::Https | Protocol::Jwt => {
+            common::build_tls_client_config(root_store, None, None)
         }
         Protocol::Mtls => {
-            let root_store = common::build_root_store(&cli.ca);
-            let tls_client_config = common::build_tls_client_config(
-                root_store,
-                cli.cert.as_deref(),
-                cli.key.as_deref(),
-            );
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_only()
-                .enable_http1()
-                .build();
-            Client::builder(TokioExecutor::new()).build(https)
+            common::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref())
         }
-    }
+    };
+
+    let pool_config = common::client::ClientPoolConfig {
+        idle_timeout: None,
+        max_idle_per_host: Some(1024),
+        http2_only: false,
+    };
+
+    common::client::build_hyper_client(tls_client_config, pool_config)
 }
 
 /// Reads a JWT token from the provided file, if applicable.

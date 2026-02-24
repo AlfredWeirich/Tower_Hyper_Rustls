@@ -245,3 +245,4 @@ pub fn build_root_store(ca_path: &Option<String>) -> RootCertStore {
     }
     root_store
 }
+pub mod client;

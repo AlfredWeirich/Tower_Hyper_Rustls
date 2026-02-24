@@ -76,11 +76,7 @@ use clap::{Parser, ValueEnum};
 use futures::{StreamExt, stream::FuturesUnordered};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, http::uri::Uri};
-use hyper_rustls::HttpsConnector;
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::TokioExecutor,
-};
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use tracing::{error, trace};
 
 // === Internal Modules ===
@@ -318,60 +314,29 @@ fn validate_cli(cli: &Cli) {
 ///
 /// HTTP/1.1 and HTTP/2 are both enabled so `hyper` can negotiate the
 /// best version with the server via ALPN.
-fn build_h2_client(cli: &Cli) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
-    match cli.security {
-        Protocol::Http => {
-            // Even for plain HTTP we set up a TLS config (required by the
-            // connector builder), but allow non-TLS connections too.
-            let root_store = common::build_root_store(&cli.ca);
-            let client_config = common::build_tls_client_config(root_store, None, None);
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(client_config)
-                .https_or_http()
-                .enable_http1()
-                // .enable_http2() ???????????
-                .build();
-            Client::builder(TokioExecutor::new())
-                .http2_initial_stream_window_size(1024 * 1024)
-                .pool_max_idle_per_host(1024)
-                .build(https)
-        }
-        Protocol::Https | Protocol::Jwt => {
-            // Server-only TLS — no client certificate is presented.
-            let root_store = common::build_root_store(&cli.ca);
-            let tls_client_config = common::build_tls_client_config(root_store, None, None);
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_only()
-                .enable_http1()
-                .enable_http2()
-                .build();
-            Client::builder(TokioExecutor::new())
-                .http2_initial_stream_window_size(1024 * 1024)
-                .pool_max_idle_per_host(1024)
-                .build(https)
+fn build_h2_client(
+    cli: &Cli,
+) -> Client<common::client::HttpsConnector<HttpConnector>, Full<Bytes>> {
+    let root_store = common::build_root_store(&cli.ca);
+
+    // Create the appropriate TLS config based on the security protocol.
+    let tls_client_config = match cli.security {
+        Protocol::Http | Protocol::Https | Protocol::Jwt => {
+            common::build_tls_client_config(root_store, None, None)
         }
         Protocol::Mtls => {
-            // Mutual TLS — the client presents its own certificate chain
-            // and private key so the server can authenticate us.
-            let root_store = common::build_root_store(&cli.ca);
-            let tls_client_config = common::build_tls_client_config(
-                root_store,
-                cli.cert.as_deref(),
-                cli.key.as_deref(),
-            );
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls_client_config)
-                .https_only()
-                .enable_http1()
-                .enable_http2()
-                .build();
-            Client::builder(TokioExecutor::new())
-                .http2_initial_stream_window_size(1024 * 1024)
-                .pool_max_idle_per_host(1024)
-                .build(https)
+            common::build_tls_client_config(root_store, cli.cert.as_deref(), cli.key.as_deref())
         }
-    }
+    };
+
+    // Configure the shared pool.
+    let pool_config = common::client::ClientPoolConfig {
+        idle_timeout: None,
+        max_idle_per_host: Some(1024),
+        http2_only: false,
+    };
+
+    common::client::build_hyper_client(tls_client_config, pool_config)
 }
 
 // =============================================================================
@@ -441,7 +406,7 @@ fn build_uri(cli: &Cli) -> Uri {
 ///   body included for debugging.
 /// - Network / TLS errors from `hyper` are propagated via `?`.
 async fn do_request_h2(
-    client: &Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    client: &Client<common::client::HttpsConnector<HttpConnector>, Full<Bytes>>,
     cli: &Cli,
     jwt_token: Option<&str>,
     uri: Uri,

@@ -484,11 +484,11 @@ impl Service<Request<SrvBody>> for RouterService {
 
             // ── Stage 4: Header Prep ─────────────────────────────────
             // Capture request components for retries
-            let original_method = parts.method.clone();
-            let mut original_headers = parts.headers.clone();
+            let original_method = parts.method;
+            let mut prepared_headers = parts.headers; // Take ownership, O(1) move!
 
             if let Err(err_resp) =
-                Self::prepare_proxy_headers(&mut original_headers, server_name, jwt_token.as_ref())
+                Self::prepare_proxy_headers(&mut prepared_headers, server_name, jwt_token.as_ref())
             {
                 return Ok(err_resp);
             }
@@ -513,8 +513,15 @@ impl Service<Request<SrvBody>> for RouterService {
             let mut attempts = 0;
 
             loop {
+                // If we are on our last allowed attempt, we can safely consume `prepared_headers` via `std::mem::take`.
+                // Otherwise, we must clone it in case we need to retry.
+                let mut current_headers = if attempts == max_retries {
+                    std::mem::take(&mut prepared_headers)
+                } else {
+                    prepared_headers.clone()
+                };
+
                 attempts += 1;
-                let mut current_headers = original_headers.clone();
 
                 // ── Stage 5: URI Reconstruction ──────────────────────────
                 let upstream_node = route_info

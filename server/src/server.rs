@@ -892,11 +892,17 @@ async fn handle_h3_connection(
     let mut h3_server: h3::server::Connection<h3_quinn::Connection, bytes::Bytes> =
         h3::server::Connection::new(h3_conn).await?;
 
+    // --- MUTEX OPTIMIZATION ---
+    // Lock the Mutex ONCE per QUIC connection, not per HTTP/3 request stream!
+    // The underlying Tower service handles its own cheap lock-free cloning.
+    let base_svc = dynamic_stack.lock().unwrap().clone();
+
     // 4. Request Loop
     loop {
         match h3_server.accept().await {
             Ok(Some(resolver)) => {
-                let svc = dynamic_stack.lock().unwrap().clone(); // per QUIC connection/stream
+                // Cheap lock-free clone per QUIC stream
+                let svc = base_svc.clone();
                 // Cheap clone of the already calculated roles
                 let roles_for_req = shared_roles.clone();
 

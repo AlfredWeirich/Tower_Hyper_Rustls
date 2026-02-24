@@ -17,11 +17,22 @@ use crate::{ServiceRespBody, SrvBody, SrvError};
 #[derive(Clone, Debug)]
 pub struct EchoService {
     server_name: &'static str,
+    cached_root_msg: Bytes,
+    cached_name_msg: Bytes,
 }
 
 impl EchoService {
     pub fn new(server_name: &'static str) -> Self {
-        Self { server_name }
+        let cached_root_msg =
+            Bytes::from(format!("Echo /! Query: none from Server: {server_name}"));
+        let cached_name_msg = Bytes::from(format!(
+            "Echo /name! Query: none from Server: {server_name}"
+        ));
+        Self {
+            server_name,
+            cached_root_msg,
+            cached_name_msg,
+        }
     }
 }
 
@@ -36,24 +47,25 @@ impl Service<Request<SrvBody>> for EchoService {
 
     fn call(&mut self, req: Request<SrvBody>) -> Self::Future {
         let server_name = self.server_name;
+        // Cheaply clone the cached Bytes since Bytes::clone is just an atomic refcount bump
+        let cached_root = self.cached_root_msg.clone();
+        let cached_name = self.cached_name_msg.clone();
 
         Box::pin(async move {
             match (req.method(), req.uri().path()) {
                 // ── GET / ────────────────────────────────────────────
                 (&hyper::Method::GET, "/") => {
-                    // 1. Extract query string
-                    let query = req.uri().query().unwrap_or("none");
-
-                    // 2. Offload heavy CPU work (commented out for high-performance benchmarking)
-                    // tokio::task::spawn_blocking(move || load_test_echo_sync())
-                    //     .await
-                    //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
-
-                    // 3. Create the message including the query
-                    let msg = format!("Echo /! Query: {} from Server: {server_name}", query);
+                    let msg_bytes = if let Some(query) = req.uri().query() {
+                        Bytes::from(format!(
+                            "Echo /! Query: {} from Server: {}",
+                            query, server_name
+                        ))
+                    } else {
+                        cached_root
+                    };
 
                     let body: ServiceRespBody =
-                        Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
+                        Full::new(msg_bytes).map_err(SrvError::from).boxed();
 
                     let response = Response::builder()
                         .status(StatusCode::OK)
@@ -66,19 +78,17 @@ impl Service<Request<SrvBody>> for EchoService {
 
                 // ── GET /name ────────────────────────────────────────────
                 (&hyper::Method::GET, "/name") => {
-                    // 1. Extract query string
-                    let query = req.uri().query().unwrap_or("none");
-
-                    // 2. Offload heavy CPU work (commented out for high-performance benchmarking)
-                    // tokio::task::spawn_blocking(move || load_test_echo_sync())
-                    //     .await
-                    //     .map_err(|_| SrvError::from("Task Join Error".to_string()))?;
-
-                    // 3. Create the message including the query
-                    let msg = format!("Echo /name! Query: {} from Server: {server_name}", query);
+                    let msg_bytes = if let Some(query) = req.uri().query() {
+                        Bytes::from(format!(
+                            "Echo /name! Query: {} from Server: {}",
+                            query, server_name
+                        ))
+                    } else {
+                        cached_name
+                    };
 
                     let body: ServiceRespBody =
-                        Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
+                        Full::new(msg_bytes).map_err(SrvError::from).boxed();
 
                     let response = Response::builder()
                         .status(StatusCode::OK)

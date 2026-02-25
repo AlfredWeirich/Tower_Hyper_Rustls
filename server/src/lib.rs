@@ -31,7 +31,7 @@ use hyper::{
 // use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::LazyLock; // Optimization 4
+
 use std::task::{Context, Poll};
 use tower::Service;
 use tower::util::BoxCloneService;
@@ -159,16 +159,15 @@ impl http_body::Body for H3Body {
 // Optimization 5
 // ── Pre-Computed Security Headers ────────────────────────────────────────────
 //
-// Parsed once at program startup, then cloned (cheap Arc bump) into every
-// response. Avoids re-parsing constant strings on the hot path.
+// Using `HeaderValue::from_static` avoids ANY allocations or atomic operations
+// (like Arc cloning) on the hot path. It is entirely zero-cost.
 
 use hyper::header::HeaderValue;
 
-static HSTS_VALUE: LazyLock<HeaderValue> =
-    LazyLock::new(|| "max-age=63072000; includeSubDomains".parse().unwrap());
-static NOSNIFF_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "nosniff".parse().unwrap());
-static CSP_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "default-src 'none'".parse().unwrap());
-static CACHE_CTL_VALUE: LazyLock<HeaderValue> = LazyLock::new(|| "no-store".parse().unwrap());
+const HSTS_VALUE: HeaderValue = HeaderValue::from_static("max-age=63072000; includeSubDomains");
+const NOSNIFF_VALUE: HeaderValue = HeaderValue::from_static("nosniff");
+const CSP_VALUE: HeaderValue = HeaderValue::from_static("default-src 'none'");
+const CACHE_CTL_VALUE: HeaderValue = HeaderValue::from_static("no-store");
 
 // ── Connection Handler ───────────────────────────────────────────────────────
 
@@ -330,20 +329,17 @@ impl ConnectionHandler {
 
         let mut resp = self.inner_service.call(req).await?;
 
-        // Optimization 6
-        // === Security Response Headers ===
-        // Injected at the ConnectionHandler level so they apply to ALL responses,
-        // regardless of middleware configuration. Cannot be accidentally disabled.
         // === Security Response Headers (pre-computed, zero-parse overhead) ===
         // headers.insert(
-        //     /*Tells browsers: "Don't embed this page in a frame, iframe, or object." This prevents clickjacking attacks where an attacker puts your site inside a hidden iframe on their site to trick users into clicking things they didn't mean to click. */
+        //     /*Tells browsers: "Don't embed this page in a frame, iframe, or object." ... */
         //     hyper::header::X_FRAME_OPTIONS,
         //     "DENY".parse().unwrap());
         let headers = resp.headers_mut();
-        headers.insert(hyper::header::STRICT_TRANSPORT_SECURITY, HSTS_VALUE.clone());
-        headers.insert(hyper::header::X_CONTENT_TYPE_OPTIONS, NOSNIFF_VALUE.clone());
-        headers.insert(hyper::header::CONTENT_SECURITY_POLICY, CSP_VALUE.clone());
-        headers.insert(hyper::header::CACHE_CONTROL, CACHE_CTL_VALUE.clone());
+        headers.reserve(4); // Pre-allocate space for 4 headers to avoid mapping reallocation
+        headers.insert(hyper::header::STRICT_TRANSPORT_SECURITY, HSTS_VALUE);
+        headers.insert(hyper::header::X_CONTENT_TYPE_OPTIONS, NOSNIFF_VALUE);
+        headers.insert(hyper::header::CONTENT_SECURITY_POLICY, CSP_VALUE);
+        headers.insert(hyper::header::CACHE_CONTROL, CACHE_CTL_VALUE);
 
         Ok(resp)
     }

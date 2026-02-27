@@ -1,0 +1,33 @@
+[package]
+name = "grpc-reflection"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "grpc-server"
+path = "src/server.rs"
+
+
+[[bin]]
+name = "grpc-router"
+path = "src/router.rs"
+
+[[bin]]
+name = "static-client"
+path = "src/static_client.rs"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tonic = "0.12"
+prost = "0.13"
+prost-reflect = { version = "0.14", features = ["serde"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+hyper = { version = "1.4", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1.0"
+tokio-stream = "0.1.18"
+tonic-reflection = { version = "0.12.3", features = ["server"] }
+[build-dependencies]
+tonic-build = "0.12"

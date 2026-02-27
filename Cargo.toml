@@ -4,7 +4,8 @@ members = [
     "server",
     "client", 
     "common", 
-    "cert_decoder"]
+    "cert_decoder",
+    "grpc_reflection"]
 resolver = "3"
 
 [profile.release]

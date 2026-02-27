@@ -220,6 +220,20 @@ pub struct RouteConfig {
     pub max_retries: Option<usize>,
     /// Interval in seconds for actively polling the /health endpoint of upstreams. Defaults to 0 (disabled).
     pub active_health_check_interval: Option<u64>,
+    /// The type of backend this route proxies to (rest or grpc). Defaults to rest.
+    #[serde(default)]
+    pub backend_type: RouteBackendType,
+}
+
+/// The type of backend service being routed to.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteBackendType {
+    /// Standard HTTP/REST backend (default).
+    #[default]
+    Rest,
+    /// gRPC backend with automatic JSON-to-Protobuf transcoding.
+    Grpc,
 }
 
 /// A load balancing strategy for downstream forwarding.
@@ -284,6 +298,9 @@ pub struct RouteTarget {
     pub max_retries: usize,
     /// Interval in seconds for actively polling the /health endpoint of upstreams. 0 means disabled.
     pub active_health_check_interval: u64,
+    /// Cached gRPC DescriptorPool from reflection, lazily loaded by the router.
+    /// Only used if backend_type is Grpc.
+    pub grpc_pool: tokio::sync::RwLock<Option<std::sync::Arc<prost_reflect::DescriptorPool>>>,
 }
 
 impl RouteTarget {
@@ -383,6 +400,8 @@ pub struct ParsedRoute {
     pub target: Arc<RouteTarget>,
     /// Roles permitted to access this route.
     pub allowed_roles: Vec<UserRole>,
+    /// The type of backend (rest or grpc).
+    pub backend_type: RouteBackendType,
 }
 
 // --- Middleware Layer Structures ---
@@ -848,12 +867,14 @@ impl ServerConfig {
                     cooldown_seconds: cfg.cooldown_seconds.unwrap_or(10),
                     max_retries: cfg.max_retries.unwrap_or(2),
                     active_health_check_interval: cfg.active_health_check_interval.unwrap_or(0),
+                    grpc_pool: tokio::sync::RwLock::new(None),
                 };
 
                 rules.push(ParsedRoute {
                     prefix: prefix.clone(),
                     target: std::sync::Arc::new(target),
                     allowed_roles: cfg.allowed_roles.clone(),
+                    backend_type: cfg.backend_type.clone(),
                 });
             }
         }

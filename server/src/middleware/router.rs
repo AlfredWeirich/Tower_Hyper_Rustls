@@ -25,7 +25,7 @@ use std::{
 };
 
 // === External Crates ===
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response, StatusCode, header,
@@ -33,13 +33,21 @@ use hyper::{
 };
 use hyper_util::client::legacy::Client;
 use matchit::Router;
+use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
+use serde::de::DeserializeSeed;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic_reflection::client::ServerReflectionClient;
+use tonic_reflection::pb::{ServerReflectionRequest, server_reflection_request::MessageRequest};
 use tower::Service;
 use tracing::{error, warn};
 
 // === Internal Modules ===
 use crate::{
     ServiceRespBody, SrvBody, SrvError,
-    configuration::{AuthenticationMethod, ParsedRoute, ServerConfig, UserRole},
+    configuration::{
+        AuthenticationMethod, ParsedRoute, RouteBackendType, RouteTarget, ServerConfig, UserRole,
+    },
 };
 use common::{build_root_store, build_tls_client_config};
 
@@ -567,48 +575,231 @@ impl Service<Request<SrvBody>> for RouterService {
                     }
                 }
 
-                let boxed_body: ServiceRespBody = Full::new(req_body_bytes.clone())
-                    .map_err(SrvError::from)
-                    .boxed();
+                if route_info.backend_type == RouteBackendType::Grpc {
+                    // Try to lazy load the descriptor pool if we don't have it yet
+                    let mut pool_guard = route_info.target.grpc_pool.write().await;
+                    if pool_guard.is_none() {
+                        let pool = build_grpc_pool(&upstream_node.uri).await;
+                        match pool {
+                            Ok(p) => *pool_guard = Some(p),
+                            Err(e) => {
+                                error!(
+                                    "{}: Failed to fetch gRPC reflection schema: {}",
+                                    server_name, e
+                                );
+                                return Ok(build_error_response(
+                                    "Failed to fetch gRPC schema",
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
+                        }
+                    }
+                    let pool = pool_guard.as_ref().unwrap().clone();
+                    drop(pool_guard);
 
-                let mut proxy_req = Request::new(boxed_body);
-                *proxy_req.method_mut() = original_method.clone();
-                *proxy_req.uri_mut() = target_uri;
-                *proxy_req.version_mut() = original_version;
-                *proxy_req.headers_mut() = current_headers;
-
-                match client.request(proxy_req).await {
-                    Ok(res) => {
-                        let (res_parts, res_body) = res.into_parts();
-                        return Ok(Response::from_parts(
-                            res_parts,
-                            res_body.map_err(SrvError::from).boxed(),
+                    // Transcode JSON to Protobuf
+                    let uri_path = parts.uri.path().trim_start_matches('/');
+                    let uri_parts: Vec<&str> = uri_path.split('/').collect();
+                    if original_method != Method::POST || uri_parts.len() < 2 {
+                        return Ok(build_error_response(
+                            "Please use POST /Fully.Qualified.Service/Method for gRPC",
+                            StatusCode::BAD_REQUEST,
                         ));
                     }
-                    Err(e) => {
-                        error!(
-                            "{}: Backend connection failed to {}: {}",
-                            server_name, backend_base_uri, e
-                        );
+                    let service_name = uri_parts[uri_parts.len() - 2];
+                    let method_name = uri_parts[uri_parts.len() - 1];
 
-                        route_info.target.mark_dead(backend_base_uri);
-                        failed_nodes.push(backend_base_uri.clone());
-
-                        if attempts <= max_retries {
-                            warn!(
-                                "{}: Retrying request... (Attempt {}/{})",
-                                server_name, attempts, max_retries
-                            );
-                            continue;
-                        } else {
-                            error!(
-                                "{}: Max retries reached. Returning 502 Bad Gateway.",
-                                server_name
-                            );
+                    let method_desc = match pool.get_service_by_name(service_name) {
+                        Some(s) => match s.methods().find(|m| m.name() == method_name) {
+                            Some(m) => m,
+                            None => {
+                                return Ok(build_error_response(
+                                    "gRPC Method Not Found",
+                                    StatusCode::NOT_FOUND,
+                                ));
+                            }
+                        },
+                        None => {
                             return Ok(build_error_response(
-                                "Bad Gateway",
-                                StatusCode::BAD_GATEWAY,
+                                "gRPC Service Not Found",
+                                StatusCode::NOT_FOUND,
                             ));
+                        }
+                    };
+
+                    let mut deserializer = serde_json::Deserializer::from_slice(&req_body_bytes);
+                    let dynamic_req_msg = match method_desc.input().deserialize(&mut deserializer) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            return Ok(build_error_response(
+                                &format!("Invalid JSON payload: {}", e),
+                                StatusCode::BAD_REQUEST,
+                            ));
+                        }
+                    };
+
+                    let mut protobuf_payload = BytesMut::new();
+                    if let Err(e) = dynamic_req_msg.encode(&mut protobuf_payload) {
+                        return Ok(build_error_response(
+                            &format!("Encode error: {}", e),
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ));
+                    }
+
+                    // Wrap in gRPC framing
+                    let mut grpc_frame = BytesMut::with_capacity(5 + protobuf_payload.len());
+                    grpc_frame.put_u8(0);
+                    grpc_frame.put_u32(protobuf_payload.len() as u32);
+                    grpc_frame.put_slice(&protobuf_payload);
+
+                    current_headers.insert(
+                        header::CONTENT_TYPE,
+                        header::HeaderValue::from_static("application/grpc"),
+                    );
+                    current_headers.insert("te", header::HeaderValue::from_static("trailers"));
+
+                    let boxed_body: ServiceRespBody = Full::new(grpc_frame.freeze())
+                        .map_err(SrvError::from)
+                        .boxed();
+
+                    let mut proxy_req = Request::new(boxed_body);
+                    *proxy_req.method_mut() = Method::POST;
+                    *proxy_req.uri_mut() = target_uri.clone();
+                    *proxy_req.version_mut() = original_version;
+                    *proxy_req.headers_mut() = current_headers;
+
+                    match client.request(proxy_req).await {
+                        Ok(mut res) => {
+                            if res.status() != StatusCode::OK {
+                                return Ok(build_error_response(
+                                    &format!("Backend Error: {}", res.status()),
+                                    res.status(),
+                                ));
+                            }
+
+                            let res_body_bytes = match res.body_mut().collect().await {
+                                Ok(c) => c.to_bytes(),
+                                Err(e) => {
+                                    return Ok(build_error_response(
+                                        &format!("Failed to read gRPC body: {}", e),
+                                        StatusCode::BAD_GATEWAY,
+                                    ));
+                                }
+                            };
+
+                            if res_body_bytes.len() < 5 {
+                                return Ok(build_error_response(
+                                    "Invalid gRPC Response",
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
+
+                            let payload_len =
+                                u32::from_be_bytes(res_body_bytes[1..5].try_into().unwrap())
+                                    as usize;
+                            if res_body_bytes.len() < 5 + payload_len {
+                                return Ok(build_error_response(
+                                    "Truncated gRPC Response",
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
+                            let raw_protobuf_res = &res_body_bytes[5..5 + payload_len];
+
+                            let mut dynamic_res_msg = DynamicMessage::new(method_desc.output());
+                            if let Err(e) = dynamic_res_msg.merge(raw_protobuf_res) {
+                                return Ok(build_error_response(
+                                    &format!("Parse error: {}", e),
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
+
+                            let response_json = match serde_json::to_string(&dynamic_res_msg) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    return Ok(build_error_response(
+                                        &format!("JSON encode error: {}", e),
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                    ));
+                                }
+                            };
+
+                            return Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "application/json")
+                                .body(
+                                    Full::new(Bytes::from(response_json))
+                                        .map_err(SrvError::from)
+                                        .boxed(),
+                                )
+                                .unwrap());
+                        }
+                        Err(e) => {
+                            error!(
+                                "{}: Backend connection failed to {}: {}",
+                                server_name, backend_base_uri, e
+                            );
+                            route_info.target.mark_dead(backend_base_uri);
+                            failed_nodes.push(backend_base_uri.clone());
+
+                            if attempts <= max_retries {
+                                warn!(
+                                    "{}: Retrying gRPC request... (Attempt {}/{})",
+                                    server_name, attempts, max_retries
+                                );
+                                continue;
+                            } else {
+                                return Ok(build_error_response(
+                                    "Bad Gateway",
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    // Standard REST proxy handling
+                    let boxed_body: ServiceRespBody = Full::new(req_body_bytes.clone())
+                        .map_err(SrvError::from)
+                        .boxed();
+
+                    let mut proxy_req = Request::new(boxed_body);
+                    *proxy_req.method_mut() = original_method.clone();
+                    *proxy_req.uri_mut() = target_uri;
+                    *proxy_req.version_mut() = original_version;
+                    *proxy_req.headers_mut() = current_headers;
+
+                    match client.request(proxy_req).await {
+                        Ok(res) => {
+                            let (res_parts, res_body) = res.into_parts();
+                            return Ok(Response::from_parts(
+                                res_parts,
+                                res_body.map_err(SrvError::from).boxed(),
+                            ));
+                        }
+                        Err(e) => {
+                            error!(
+                                "{}: Backend connection failed to {}: {}",
+                                server_name, backend_base_uri, e
+                            );
+
+                            route_info.target.mark_dead(backend_base_uri);
+                            failed_nodes.push(backend_base_uri.clone());
+
+                            if attempts <= max_retries {
+                                warn!(
+                                    "{}: Retrying request... (Attempt {}/{})",
+                                    server_name, attempts, max_retries
+                                );
+                                continue;
+                            } else {
+                                error!(
+                                    "{}: Max retries reached. Returning 502 Bad Gateway.",
+                                    server_name
+                                );
+                                return Ok(build_error_response(
+                                    "Bad Gateway",
+                                    StatusCode::BAD_GATEWAY,
+                                ));
+                            }
                         }
                     }
                 }
@@ -631,10 +822,90 @@ impl Service<Request<SrvBody>> for RouterService {
 ///
 /// Panics if the `Response::builder()` fails, which can only happen if
 /// an invalid status code is supplied — all call-sites use well-known constants.
-fn build_error_response(msg: &'static str, status: StatusCode) -> Response<ServiceRespBody> {
-    let body = Full::new(Bytes::from(msg)).map_err(SrvError::from).boxed();
+fn build_error_response(msg: &str, status: StatusCode) -> Response<ServiceRespBody> {
+    let body = Full::new(Bytes::from(msg.to_string()))
+        .map_err(SrvError::from)
+        .boxed();
     Response::builder()
         .status(status)
         .body(body)
         .expect("Response builder failed")
+}
+
+/// Dynamically loads the gRPC Reflection DescriptorPool
+async fn build_grpc_pool(
+    backend_base_uri: &Uri,
+) -> Result<Arc<DescriptorPool>, Box<dyn std::error::Error + Send + Sync>> {
+    let host = backend_base_uri.host().unwrap_or("localhost");
+    let port = backend_base_uri.port_u16().unwrap_or(80);
+    // Usually tonic channel is built from a static url, so we compose it
+    let target = format!("http://{}:{}", host, port);
+
+    let channel = tonic::transport::Channel::from_shared(target)?
+        .connect()
+        .await?;
+    let mut reflection_client = ServerReflectionClient::new(channel);
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(ServerReflectionRequest {
+        host: String::new(),
+        message_request: Some(MessageRequest::ListServices(String::new())),
+    })
+    .await?;
+
+    // Using tonic-reflection API
+    let response = reflection_client
+        .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
+        .await?;
+    let mut response_stream = response.into_inner();
+
+    let mut current_services = Vec::new();
+    if let Some(res) = response_stream.message().await? {
+        if let Some(
+            tonic_reflection::pb::server_reflection_response::MessageResponse::ListServicesResponse(
+                list_res,
+            ),
+        ) = res.message_response
+        {
+            for service in list_res.service {
+                current_services.push(service.name);
+            }
+        }
+    }
+
+    let mut pool = DescriptorPool::new();
+
+    for service_name in current_services {
+        if service_name.starts_with("grpc.reflection") {
+            continue;
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ServerReflectionRequest {
+            host: String::new(),
+            message_request: Some(MessageRequest::FileContainingSymbol(service_name)),
+        })
+        .await?;
+
+        let response = reflection_client
+            .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
+            .await?;
+        let mut response_stream = response.into_inner();
+
+        if let Some(res) = response_stream.message().await? {
+            if let Some(
+                tonic_reflection::pb::server_reflection_response::MessageResponse::FileDescriptorResponse(
+                    fd_res,
+                ),
+            ) = res.message_response
+            {
+                for fd_bytes in fd_res.file_descriptor_proto {
+                    let fd_proto = prost::Message::decode(fd_bytes.as_ref())?;
+                    pool.add_file_descriptor_proto(fd_proto)?;
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(pool))
 }

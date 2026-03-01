@@ -848,9 +848,16 @@ impl ServerConfig {
 
                 let mut upstream_nodes = Vec::with_capacity(cfg.upstreams.len());
                 for upstream in &cfg.upstreams {
-                    let uri = format!("{proto_str}://{upstream}")
+                    let uri_str =
+                        if upstream.starts_with("http://") || upstream.starts_with("https://") {
+                            upstream.to_string()
+                        } else {
+                            format!("{proto_str}://{upstream}")
+                        };
+
+                    let uri = uri_str
                         .parse::<Uri>()
-                        .with_context(|| format!("Invalid upstream URI: {upstream}"))?;
+                        .with_context(|| format!("Invalid upstream URI: {uri_str}"))?;
 
                     upstream_nodes.push(UpstreamNode {
                         uri,

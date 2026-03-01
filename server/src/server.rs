@@ -163,6 +163,8 @@ async fn main_async(config: Arc<Config>) -> Result<(), Error> {
     > = std::collections::HashMap::new();
 
     // Iterate through all configured servers and spawn tasks for those that are enabled.
+    // Each enabled server gets its own cancellation token, configuration snapshot, and
+    // dynamic service stack (wrapped in a Mutex so we can hot-swap it upon reload).
     for server_config in &config.servers {
         if !server_config.enabled {
             continue;
@@ -308,113 +310,25 @@ async fn main_async(config: Arc<Config>) -> Result<(), Error> {
 ///
 /// This is where the specific instructions for one server (one port) are executed.
 ///
-/// # The Process:
-/// 1. **Resolve IP**: Finds the IP address to listen on.
-/// 2. **Build Stack**: Assembles the "chain of command" (middleware) that will handle each request.
-/// 3. **Check Protocol**:
-///    - **HTTPS**: Starts a "Dual Stack" listener. accessible via TCP (traditional web) AND UDP (modern HTTP/3).
-///    - **HTTP**: Starts a simple TCP listener for plaintext traffic.
+/// # Architecture & Lifecycle:
+/// 1. **Active Health Checks**: If defining a router, it establishes dedicated
+///    background loops (`tokio::spawn`) to ping upstreams.
+///    - For HTTP/REST backends, it issues `GET /health` requests.
+///    - For gRPC backends, it dynamically evaluates the endpoint using **gRPC Reflection Layer**,
+///      locating a `health` RPC method and invoking it with a 5-byte uncompressed empty payload.
+/// 2. **Resolve IP**: Evaluates the `SocketAddr` to bind based on `0.0.0.0` or hostname.
+/// 3. **Protocol Dispatch**:
+///    - **HTTPS (Dual Stack)**: Starts *two* concurrent listeners: a standard TCP listener
+///      (for HTTP/1.1 and HTTP/2 connections over TLS) and a UDP QUIC endpoint (for HTTP/3).
+///    - **HTTP (Plaintext)**: Starts a single basic TCP listener using Hyper's legacy
+///      auto-connection builder, injecting timeouts to mitigate Slowloris attacks.
 async fn start_single_server(
     server_config: Arc<ServerConfig>,
     cancel_token: CancellationToken,
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
 ) {
     if server_config.service == ServiceType::Router {
-        if let Some(router_params) = &server_config.router_params {
-            let root_store = common::build_root_store(&router_params.ssl_root_certificate);
-            let is_mtls = router_params.authentication == AuthenticationMethod::ClientCert;
-            let tls_client_config = if is_mtls {
-                common::build_tls_client_config(
-                    root_store,
-                    router_params.ssl_client_certificate.as_deref(),
-                    router_params.ssl_client_key.as_deref(),
-                )
-            } else {
-                common::build_tls_client_config(root_store, None, None)
-            };
-
-            let pool_config = common::client::ClientPoolConfig {
-                idle_timeout: Some(Duration::from_secs(90)),
-                max_idle_per_host: Some(1024),
-                http2_only: false,
-            };
-
-            let client = common::client::build_hyper_client(tls_client_config, pool_config);
-
-            let jwt_token = router_params
-                .jwt
-                .as_ref()
-                .and_then(|t| hyper::header::HeaderValue::from_str(&format!("Bearer {}", t)).ok());
-
-            let proto_str = match router_params.protocol {
-                Protocol::Https => "https",
-                Protocol::Http => "http",
-            };
-
-            for route in &server_config.parsed_routes {
-                let interval = route.target.active_health_check_interval;
-                if interval > 0 {
-                    for (idx, node) in route.target.upstreams.iter().enumerate() {
-                        let client = client.clone();
-                        let token = cancel_token.clone();
-                        let uri_str = format!(
-                            "{}://{}/health",
-                            proto_str,
-                            node.uri.authority().unwrap().as_str()
-                        );
-                        let uri = uri_str.parse::<hyper::Uri>().unwrap();
-                        let server_name = server_config.static_name.unwrap_or("unknown");
-                        let interval_dur = Duration::from_secs(interval);
-                        let target_arc = route.target.clone();
-                        let auth_header = jwt_token.clone();
-
-                        tokio::spawn(async move {
-                            let mut ticker = tokio::time::interval(interval_dur);
-                            // Set tick behavior so it doesn't burst if delayed
-                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                            loop {
-                                tokio::select! {
-                                    _ = token.cancelled() => break,
-                                    _ = ticker.tick() => {
-                                        let mut req_builder = Request::builder()
-                                            .method(hyper::Method::GET)
-                                            .uri(uri.clone());
-
-                                        if let Some(ref header_val) = auth_header {
-                                            req_builder = req_builder.header(hyper::header::AUTHORIZATION, header_val.clone());
-                                        }
-
-                                        let req = req_builder
-                                            .body(http_body_util::Empty::<bytes::Bytes>::new().map_err(|e| match e {}).boxed())
-                                            .unwrap();
-                                        match client.request(req).await {
-                                            Ok(resp) if resp.status() == StatusCode::OK => {
-                                                if !target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
-                                                    trace!("{}: Health check recovered '{}'", server_name, uri);
-                                                    target_arc.upstreams[idx].is_alive.store(true, std::sync::atomic::Ordering::Relaxed);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
-                                                    trace!("{}: Health check failed for '{}': {}", server_name, uri, e);
-                                                    target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-                                                }
-                                            }
-                                            Ok(resp) => {
-                                                if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
-                                                    trace!("{}: Health check failed status {} for '{}'", server_name, resp.status(), uri);
-                                                    target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        }
+        spawn_router_health_checks(&server_config, cancel_token.clone());
     }
 
     let server_addr = match server_config.get_server_ip() {
@@ -503,6 +417,205 @@ async fn start_single_server(
                         }
                         Err(e) => error!("{}: HTTP Accept error: {}", server_config.name, e),
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Spawns the background active health checker loops for upstream router targets.
+///
+/// This evaluates all `parsed_routes` in the given `ServerConfig`. For any backend marked
+/// with a non-zero health check interval, this method provisions dedicated keep-alive
+/// hyper clients (either HTTP/2 exclusively for gRPC, or generic for REST) and spawns a repeating
+/// `tokio::select!` loop to heartbeat the instance.
+fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: CancellationToken) {
+    if let Some(router_params) = &server_config.router_params {
+        // --- 1. TLS Context Initialization for Upstreams ---
+        // If the router needs to speak HTTPS/mTLS to its backends, we build a trusted root store.
+        let root_store = common::build_root_store(&router_params.ssl_root_certificate);
+        let is_mtls = router_params.authentication == AuthenticationMethod::ClientCert;
+
+        // Build the exact TLS handshake instructions this proxy will use when calling upstream nodes.
+        let tls_client_config = if is_mtls {
+            common::build_tls_client_config(
+                root_store,
+                router_params.ssl_client_certificate.as_deref(), // The proxy's own client cert
+                router_params.ssl_client_key.as_deref(),         // The proxy's private key
+            )
+        } else {
+            common::build_tls_client_config(root_store, None, None)
+        };
+
+        // --- 2. Connection Pool Setup ---
+        // To maximize throughput, the proxy maintains keep-alive connection pools.
+
+        // gRPC-specific pool: gRPC requires HTTP/2 multiplexing.
+        // We enforce `http2_only: true` so it strictly negotiates H2 during the TLS ALPN handshake.
+        let grpc_pool_config = common::client::ClientPoolConfig {
+            idle_timeout: Some(Duration::from_secs(90)),
+            max_idle_per_host: Some(1024),
+            http2_only: true,
+        };
+        let grpc_client =
+            common::client::build_hyper_client(tls_client_config.clone(), grpc_pool_config);
+
+        // Standard REST/HTTP pool: Allows HTTP/1.1 or H2 depending on what the upstream supports.
+        let pool_config = common::client::ClientPoolConfig {
+            idle_timeout: Some(Duration::from_secs(90)),
+            max_idle_per_host: Some(1024),
+            http2_only: false,
+        };
+
+        let client = common::client::build_hyper_client(tls_client_config, pool_config);
+
+        // Process a pre-configured static JWT Bearer token if this proxy needs to authenticate to upstreams.
+        let jwt_token = router_params
+            .jwt
+            .as_ref()
+            .and_then(|t| hyper::header::HeaderValue::from_str(&format!("Bearer {}", t)).ok());
+
+        let proto_str = match router_params.protocol {
+            Protocol::Https => "https",
+            Protocol::Http => "http",
+        };
+
+        // --- 3. Active Health Check Initialization ---
+        // Iterate over all routing rules to find upstreams that require active health monitoring.
+        for route in &server_config.parsed_routes {
+            let interval = route.target.active_health_check_interval;
+            let is_grpc = route.backend_type == server::configuration::RouteBackendType::Grpc;
+
+            // If interval > 0, the user wants the proxy to automatically ping the servers in the background
+            // to evict them from the load-balancer if they die, and re-add them when they recover.
+            if interval > 0 {
+                for (idx, node) in route.target.upstreams.iter().enumerate() {
+                    // Select the appropriate hyper connection pool
+                    let client = if is_grpc {
+                        grpc_client.clone()
+                    } else {
+                        client.clone()
+                    };
+
+                    let token = cancel_token.clone();
+
+                    // Parse target URIs stringly. Use `proto_str` as a fallback boundary
+                    // if the user omitted `http://` or `https://` in the config.
+                    let base_uri_str = format!(
+                        "{}://{}",
+                        node.uri.scheme_str().unwrap_or(proto_str),
+                        node.uri.authority().unwrap().as_str()
+                    );
+                    let base_uri = base_uri_str.parse::<hyper::Uri>().unwrap();
+
+                    // By default, REST active health checks use the `/health` convention relative to the root.
+                    let rest_uri = format!("{}/health", base_uri_str)
+                        .parse::<hyper::Uri>()
+                        .unwrap();
+
+                    let server_name = server_config.static_name.unwrap_or("unknown");
+                    let interval_dur = Duration::from_secs(interval);
+                    let target_arc = route.target.clone();
+                    let auth_header = jwt_token.clone();
+                    let router_params = router_params.clone();
+
+                    tokio::spawn(async move {
+                        let mut ticker = tokio::time::interval(interval_dur);
+                        // Set tick behavior so it doesn't burst if delayed
+                        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                        // For gRPC, we resolve the health path once (lazily)
+                        let mut grpc_health_path: Option<String> = None;
+                        let mut checked_grpc_reflection = false;
+
+                        loop {
+                            tokio::select! {
+                                _ = token.cancelled() => break,
+                                _ = ticker.tick() => {
+                                    let final_uri;
+                                    let mut req_builder = Request::builder();
+
+                                    if is_grpc {
+                                        if !checked_grpc_reflection {
+                                            checked_grpc_reflection = true;
+
+                                            let mut pool_guard = target_arc.grpc_pool.write().await;
+                                            if pool_guard.is_none() {
+                                                match server::middleware::router::build_grpc_pool(&base_uri, Some(&router_params)).await {
+                                                    Ok(p) => *pool_guard = Some(p),
+                                                    Err(e) => tracing::warn!("{}: Failed to load gRPC reflection schema for active health check: {:?}", server_name, e)
+                                                }
+                                            }
+
+                                            if let Some(pool) = pool_guard.as_ref() {
+                                                for service in pool.services() {
+                                                    for method in service.methods() {
+                                                        if method.name() == "health" {
+                                                            grpc_health_path = Some(format!("/{}/health", service.full_name()));
+                                                            break;
+                                                        }
+                                                    }
+                                                    if grpc_health_path.is_some() { break; }
+                                                }
+                                            }
+
+                                            if grpc_health_path.is_none() {
+                                                tracing::warn!("{}: No 'health' method found in gRPC reflection schema for {}; skipping active health check", server_name, base_uri);
+                                            }
+                                        }
+
+                                        if let Some(path) = &grpc_health_path {
+                                            final_uri = format!("{}{}", base_uri_str, path).parse::<hyper::Uri>().unwrap();
+                                            req_builder = req_builder.method(hyper::Method::POST).uri(final_uri.clone());
+                                            req_builder = req_builder.header("content-type", "application/grpc");
+                                            req_builder = req_builder.header("te", "trailers");
+                                        } else {
+                                            continue;
+                                        }
+                                    } else {
+                                        final_uri = rest_uri.clone();
+                                        req_builder = req_builder.method(hyper::Method::GET).uri(final_uri.clone());
+                                    }
+
+                                    if let Some(ref header_val) = auth_header {
+                                        req_builder = req_builder.header(hyper::header::AUTHORIZATION, header_val.clone());
+                                    }
+
+                                    let req_body = if is_grpc && grpc_health_path.is_some() {
+                                        let payload = bytes::Bytes::from(vec![0u8, 0, 0, 0, 0]);
+                                        http_body_util::Full::new(payload).map_err(|e| match e {}).boxed()
+                                    } else {
+                                        http_body_util::Empty::<bytes::Bytes>::new().map_err(|e| match e {}).boxed()
+                                    };
+
+                                    let req = req_builder.body(req_body).unwrap();
+                                    match client.request(req).await {
+                                        Ok(resp) => {
+                                            let is_ok = resp.status() == StatusCode::OK;
+
+                                            if is_ok {
+                                                if !target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                    info!("{}: Health check recovered '{}'", server_name, final_uri);
+                                                    target_arc.upstreams[idx].is_alive.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                }
+                                            } else {
+                                                if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                    tracing::warn!("{}: Health check failed status {} for '{}'", server_name, resp.status(), final_uri);
+                                                    target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                                tracing::warn!("{}: Health check failed for '{}': {}", server_name, final_uri, e);
+                                                target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
             }
         }

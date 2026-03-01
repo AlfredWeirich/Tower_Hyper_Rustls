@@ -52,20 +52,43 @@ async fn main() -> Result<(), Error> {
     // Construct the networking client (Hyper-based) with appropriate TLS/Auth settings
     let client = build_client(&cli);
 
-    // Placeholder URI and Client - this demonstrates how to use the generated EchoClient
-    // with a specific origin and the configured Hyper client.
-    let uri = Uri::from_static("https://example.com");
-    let mut client = EchoClient::with_origin(client, uri);
+    // Build the URI from the CLI parameters
+    let scheme = match cli.security {
+        Protocol::Https | Protocol::Mtls | Protocol::Jwt => "https",
+        Protocol::Http => "http",
+    };
+    let uri_string = format!("{}://{}", scheme, cli.uri);
+    let uri: Uri = uri_string.parse().expect("Invalid URI");
 
-    // Construct a standard gRPC Request
-    let request = tonic::Request::new(EchoRequest {
-        message: "hello".into(),
-    });
+    let concurrency = cli.num_parallel as usize;
+    let total_requests = cli.num_req as usize;
 
-    // Execute the RPC and await the response
-    let response = client.unary_echo(request).await?;
+    // We clone the client for the closure since the HTTP connector needs to be shared
+    run_sliding_window(total_requests, concurrency, "gRPC request failed", || {
+        let uri = uri.clone();
+        let client_clone = client.clone();
 
-    println!("RESPONSE={response:?}");
+        async move {
+            // Placeholder: Demonstrates how to use the generated EchoClient
+            // with a specific origin and the configured Hyper client.
+            let mut grpc_client = EchoClient::with_origin(client_clone, uri);
+
+            // Construct a standard gRPC Request
+            let request = tonic::Request::new(EchoRequest {
+                message: "hello".into(),
+            });
+
+            // Execute the RPC and await the response
+            match grpc_client.unary_echo(request).await {
+                Ok(response) => {
+                    trace!("RESPONSE={:?}", response);
+                    Ok(format!("{:?}", response))
+                }
+                Err(e) => Err(anyhow::anyhow!("gRPC error: {}", e)),
+            }
+        }
+    })
+    .await;
 
     Ok(())
 }
@@ -74,6 +97,15 @@ async fn main() -> Result<(), Error> {
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 struct Cli {
+    /// Total number of requests to send.
+    #[clap(short = 'i', long, default_value_t = 10)]
+    num_req: u32,
+
+    /// Maximum number of requests in flight at the same time.
+    /// Higher values increase throughput but also resource usage.
+    #[clap(long, default_value_t = 128)]
+    num_parallel: u16,
+
     #[clap(short = 's', long, value_enum, default_value_t = Protocol::Https)]
     security: Protocol,
     #[clap(short = 'r', long, value_name = "Root ca")]
@@ -86,8 +118,6 @@ struct Cli {
     key: Option<String>,
     #[clap(short = 'u', long, default_value = "192.168.178.31:1337")]
     uri: String,
-    // #[clap(long, short = 'p', default_value = "/", value_name = "request path")]
-    // path: String,
 }
 
 /// Supported protocols.
@@ -178,3 +208,59 @@ fn read_jwt(cli: &Cli) -> Option<String> {
 //     trace!("Built URI: {}", uri);
 //     uri
 // }
+
+/// A sliding-window task executor.
+/// Keeps up to `concurrency` tasks in flight, running `total_requests` tasks in total,
+/// polling them as they complete, and refilling the window.
+async fn run_sliding_window<F, Fut>(
+    total_requests: usize,
+    concurrency: usize,
+    err_prefix: &str,
+    mut make_future: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, Error>>,
+{
+    let mut futs = FuturesUnordered::new();
+    let start = Instant::now();
+    let mut completed = 0;
+    let mut launched = 0;
+
+    // Seed the initial batch
+    let first_batch = std::cmp::min(concurrency, total_requests);
+    for _ in 0..first_batch {
+        futs.push(make_future());
+        launched += 1;
+    }
+
+    // Poll completions and refill until all are done
+    while completed < total_requests {
+        if let Some(res) = futs.next().await {
+            completed += 1;
+            match res {
+                Ok(_) => {}
+                Err(e) => error!("{err_prefix}: {e}"),
+            }
+
+            if launched < total_requests {
+                futs.push(make_future());
+                launched += 1;
+            }
+        }
+    }
+
+    print_stats(start, total_requests, concurrency);
+}
+
+/// Prints throughput statistics after all requests have completed.
+fn print_stats(start: Instant, total_requests: usize, concurrency: usize) {
+    let duration = start.elapsed();
+    let mean = total_requests as f64 / duration.as_secs_f64();
+    tracing::info!(
+        "\nDuration: {}ms with {} total requests at concurrency {}\nMean requests per second: {mean:.0}  --> per request: {:.1}us",
+        duration.as_millis(),
+        total_requests,
+        concurrency,
+        1000000. / mean
+    );
+}

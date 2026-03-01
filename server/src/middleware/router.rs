@@ -28,7 +28,7 @@ use std::{
 use bytes::{BufMut, Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    Request, Response, StatusCode, header,
+    Method, Request, Response, StatusCode, header,
     http::uri::{PathAndQuery, Uri},
 };
 use hyper_util::client::legacy::Client;
@@ -37,17 +37,17 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde::de::DeserializeSeed;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic_reflection::client::ServerReflectionClient;
-use tonic_reflection::pb::{ServerReflectionRequest, server_reflection_request::MessageRequest};
+use tonic_reflection::pb::v1::{
+    ServerReflectionRequest, server_reflection_client::ServerReflectionClient,
+    server_reflection_request::MessageRequest,
+};
 use tower::Service;
 use tracing::{error, warn};
 
 // === Internal Modules ===
 use crate::{
     ServiceRespBody, SrvBody, SrvError,
-    configuration::{
-        AuthenticationMethod, ParsedRoute, RouteBackendType, RouteTarget, ServerConfig, UserRole,
-    },
+    configuration::{AuthenticationMethod, ParsedRoute, RouteBackendType, ServerConfig, UserRole},
 };
 use common::{build_root_store, build_tls_client_config};
 
@@ -103,6 +103,12 @@ pub struct RouterService {
     /// presents a client certificate (mTLS). The client maintains an internal
     /// connection pool with a configurable idle timeout.
     client: Client<
+        common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        ServiceRespBody,
+    >,
+
+    /// A dedicated HTTP/2 client used exclusively for forwarding to gRPC backends.
+    grpc_client: Client<
         common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         ServiceRespBody,
     >,
@@ -170,19 +176,26 @@ impl RouterService {
             // Exact-prefix entry (e.g. `/api`).
             let _ = router.insert(prefix, route_data.clone());
 
-            // Wildcard entry (e.g. `/api/*rest`). The `*rest` parameter
+            // Wildcard entry (e.g. `/api/{*rest}`). The `*rest` parameter
             // captures everything after the prefix, which we later append
             // to the upstream URI during URI reconstruction (step 4 in `call`).
             let wildcard_path = if prefix.ends_with('/') {
-                format!("{}*rest", prefix)
+                format!("{}{{*rest}}", prefix)
             } else {
-                format!("{}/*rest", prefix)
+                format!("{}/{{*rest}}", prefix)
             };
 
             if let Err(e) = router.insert(&wildcard_path, route_data.clone()) {
                 warn!(
                     "{}: Failed to insert wildcard route {}: {}",
                     config.name, wildcard_path, e
+                );
+            } else {
+                tracing::debug!(
+                    "{}: Registered route: {} and {}",
+                    config.name,
+                    prefix,
+                    wildcard_path
                 );
             }
         }
@@ -192,22 +205,23 @@ impl RouterService {
         // The client is backed by `rustls` and supports both HTTP/1.1 and
         // HTTP/2.  When the upstream requires mutual TLS (mTLS), a client
         // certificate and private key are loaded into the TLS config.
+
+        // Load the CA root store used to validate upstream server certs.
+        let root_store = build_root_store(&router_params.ssl_root_certificate);
+        let is_mtls = router_params.authentication == AuthenticationMethod::ClientCert;
+
+        // Conditionally attach client-certificate material for mTLS.
+        let tls_client_config = if is_mtls {
+            build_tls_client_config(
+                root_store,
+                router_params.ssl_client_certificate.as_deref(),
+                router_params.ssl_client_key.as_deref(),
+            )
+        } else {
+            build_tls_client_config(root_store, None, None)
+        };
+
         let client = {
-            // Load the CA root store used to validate upstream server certs.
-            let root_store = build_root_store(&router_params.ssl_root_certificate);
-            let is_mtls = router_params.authentication == AuthenticationMethod::ClientCert;
-
-            // Conditionally attach client-certificate material for mTLS.
-            let tls_client_config = if is_mtls {
-                build_tls_client_config(
-                    root_store,
-                    router_params.ssl_client_certificate.as_deref(),
-                    router_params.ssl_client_key.as_deref(),
-                )
-            } else {
-                build_tls_client_config(root_store, None, None)
-            };
-
             // Use the shared client builder from the `common` crate
             let pool_config = common::client::ClientPoolConfig {
                 idle_timeout: Some(std::time::Duration::from_secs(90)),
@@ -215,7 +229,18 @@ impl RouterService {
                 http2_only: false,
             };
 
-            common::client::build_hyper_client(tls_client_config, pool_config)
+            common::client::build_hyper_client(tls_client_config.clone(), pool_config)
+        };
+
+        let grpc_client = {
+            let pool_config = common::client::ClientPoolConfig {
+                idle_timeout: Some(std::time::Duration::from_secs(90)),
+                max_idle_per_host: Some(1024),
+                http2_only: true, // MUST be true for gRPC
+            };
+
+            // Using the SAME tls_client_config applies mTLS & root_store certificates!
+            common::client::build_hyper_client(tls_client_config.clone(), pool_config)
         };
 
         // ── 3. JWT bearer token preparation ───────────────────────────
@@ -228,6 +253,7 @@ impl RouterService {
 
         RouterService {
             client,
+            grpc_client,
             router,
             config,
             jwt_token,
@@ -457,6 +483,7 @@ impl Service<Request<SrvBody>> for RouterService {
         // `async` block without borrowing `self`.
         let router = Arc::clone(&self.router);
         let client = self.client.clone();
+        let grpc_client = self.grpc_client.clone();
         let server_name = self.config.static_name.unwrap_or("unknown");
         let jwt_token = self.jwt_token.clone();
 
@@ -481,7 +508,15 @@ impl Service<Request<SrvBody>> for RouterService {
             let path = parts.uri.path();
             let matched = match router.at(path) {
                 Ok(m) => m,
-                Err(_) => return Ok(build_error_response("Not Found", StatusCode::NOT_FOUND)),
+                Err(e) => {
+                    tracing::warn!(
+                        "{}: Route not found for path '{}', error: {:?}",
+                        server_name,
+                        path,
+                        e
+                    );
+                    return Ok(build_error_response("Not Found", StatusCode::NOT_FOUND));
+                }
             };
             let route_info = matched.value;
 
@@ -579,12 +614,16 @@ impl Service<Request<SrvBody>> for RouterService {
                     // Try to lazy load the descriptor pool if we don't have it yet
                     let mut pool_guard = route_info.target.grpc_pool.write().await;
                     if pool_guard.is_none() {
-                        let pool = build_grpc_pool(&upstream_node.uri).await;
+                        let pool = build_grpc_pool(
+                            &upstream_node.uri,
+                            self_clone.config.router_params.as_ref(),
+                        )
+                        .await;
                         match pool {
                             Ok(p) => *pool_guard = Some(p),
                             Err(e) => {
                                 error!(
-                                    "{}: Failed to fetch gRPC reflection schema: {}",
+                                    "{}: Failed to fetch gRPC reflection schema: {:?}",
                                     server_name, e
                                 );
                                 return Ok(build_error_response(
@@ -600,7 +639,16 @@ impl Service<Request<SrvBody>> for RouterService {
                     // Transcode JSON to Protobuf
                     let uri_path = parts.uri.path().trim_start_matches('/');
                     let uri_parts: Vec<&str> = uri_path.split('/').collect();
+                    tracing::debug!(
+                        "gRPC Transcoding: Path '{}' split into {} parts",
+                        uri_path,
+                        uri_parts.len()
+                    );
                     if original_method != Method::POST || uri_parts.len() < 2 {
+                        warn!(
+                            "{}: Invalid gRPC request method or path structure",
+                            server_name
+                        );
                         return Ok(build_error_response(
                             "Please use POST /Fully.Qualified.Service/Method for gRPC",
                             StatusCode::BAD_REQUEST,
@@ -608,11 +656,20 @@ impl Service<Request<SrvBody>> for RouterService {
                     }
                     let service_name = uri_parts[uri_parts.len() - 2];
                     let method_name = uri_parts[uri_parts.len() - 1];
+                    tracing::debug!(
+                        "gRPC Parsed: Service='{}', Method='{}'",
+                        service_name,
+                        method_name
+                    );
 
                     let method_desc = match pool.get_service_by_name(service_name) {
                         Some(s) => match s.methods().find(|m| m.name() == method_name) {
                             Some(m) => m,
                             None => {
+                                warn!(
+                                    "{}: gRPC Method '{}' Not Found in Service '{}'",
+                                    server_name, method_name, service_name
+                                );
                                 return Ok(build_error_response(
                                     "gRPC Method Not Found",
                                     StatusCode::NOT_FOUND,
@@ -620,6 +677,7 @@ impl Service<Request<SrvBody>> for RouterService {
                             }
                         },
                         None => {
+                            warn!("{}: gRPC Service '{}' Not Found", server_name, service_name);
                             return Ok(build_error_response(
                                 "gRPC Service Not Found",
                                 StatusCode::NOT_FOUND,
@@ -652,23 +710,47 @@ impl Service<Request<SrvBody>> for RouterService {
                     grpc_frame.put_u32(protobuf_payload.len() as u32);
                     grpc_frame.put_slice(&protobuf_payload);
 
-                    current_headers.insert(
-                        header::CONTENT_TYPE,
-                        header::HeaderValue::from_static("application/grpc"),
-                    );
-                    current_headers.insert("te", header::HeaderValue::from_static("trailers"));
-
                     let boxed_body: ServiceRespBody = Full::new(grpc_frame.freeze())
                         .map_err(SrvError::from)
                         .boxed();
 
-                    let mut proxy_req = Request::new(boxed_body);
-                    *proxy_req.method_mut() = Method::POST;
-                    *proxy_req.uri_mut() = target_uri.clone();
-                    *proxy_req.version_mut() = original_version;
-                    *proxy_req.headers_mut() = current_headers;
+                    let grpc_target_path = format!("/{}/{}", service_name, method_name);
+                    let mut proxy_uri_parts = target_uri.into_parts();
+                    proxy_uri_parts.path_and_query =
+                        Some(PathAndQuery::from_maybe_shared(grpc_target_path).unwrap());
+                    let final_target_uri = Uri::from_parts(proxy_uri_parts).unwrap();
 
-                    match client.request(proxy_req).await {
+                    tracing::debug!(
+                        "{}: Forwarding gRPC request to final URI '{}'",
+                        server_name,
+                        final_target_uri
+                    );
+
+                    // Construct a clean HTTP/2 request suitable for gRPC
+                    let mut builder = Request::builder()
+                        .method(Method::POST)
+                        .uri(final_target_uri)
+                        .version(hyper::Version::HTTP_2)
+                        .header(header::CONTENT_TYPE, "application/grpc")
+                        .header("te", "trailers");
+
+                    // Forward only specific safe headers (like Authorization) if needed
+                    if let Some(auth) = current_headers.get(header::AUTHORIZATION) {
+                        builder = builder.header(header::AUTHORIZATION, auth.clone());
+                    }
+
+                    let proxy_req = match builder.body(boxed_body) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            return Ok(build_error_response(
+                                &format!("Failed to build gRPC request: {}", e),
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                            ));
+                        }
+                    };
+
+                    // We MUST use the HTTP/2 grpc_client for gRPC targets
+                    match grpc_client.request(proxy_req).await {
                         Ok(mut res) => {
                             if res.status() != StatusCode::OK {
                                 return Ok(build_error_response(
@@ -833,17 +915,65 @@ fn build_error_response(msg: &str, status: StatusCode) -> Response<ServiceRespBo
 }
 
 /// Dynamically loads the gRPC Reflection DescriptorPool
-async fn build_grpc_pool(
+pub async fn build_grpc_pool(
     backend_base_uri: &Uri,
+    router_params: Option<&crate::configuration::RouterParams>,
 ) -> Result<Arc<DescriptorPool>, Box<dyn std::error::Error + Send + Sync>> {
-    let host = backend_base_uri.host().unwrap_or("localhost");
+    let _host = backend_base_uri.host().unwrap_or("localhost");
     let port = backend_base_uri.port_u16().unwrap_or(80);
-    // Usually tonic channel is built from a static url, so we compose it
-    let target = format!("http://{}:{}", host, port);
+    let scheme = backend_base_uri.scheme_str().unwrap_or("http");
 
-    let channel = tonic::transport::Channel::from_shared(target)?
-        .connect()
-        .await?;
+    // Usually tonic channel is built from a static url, so we compose it
+    let target = format!("{}://localhost:{}", scheme, port);
+
+    let mut endpoint = tonic::transport::Channel::from_shared(target)?;
+
+    if scheme == "https" {
+        let mut tls = tonic::transport::ClientTlsConfig::new().domain_name("localhost");
+
+        // Root CA
+        if let Some(params) = router_params {
+            if let Some(ca_path) = &params.ssl_root_certificate {
+                let pem = std::fs::read(ca_path).unwrap_or_else(|_| Vec::new());
+                if !pem.is_empty() {
+                    let ca = tonic::transport::Certificate::from_pem(pem);
+                    tls = tls.ca_certificate(ca);
+                }
+            } else {
+                let pem = std::fs::read("./server_certs/self_signed/myca.pem")
+                    .unwrap_or_else(|_| Vec::new());
+                if !pem.is_empty() {
+                    let ca = tonic::transport::Certificate::from_pem(pem);
+                    tls = tls.ca_certificate(ca);
+                }
+            }
+
+            // Client Identity (mTLS)
+            if params.authentication == crate::configuration::AuthenticationMethod::ClientCert {
+                if let (Some(cert_path), Some(key_path)) =
+                    (&params.ssl_client_certificate, &params.ssl_client_key)
+                {
+                    if let (Ok(cert_pem), Ok(key_pem)) =
+                        (std::fs::read(cert_path), std::fs::read(key_path))
+                    {
+                        let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
+                        tls = tls.identity(identity);
+                    }
+                }
+            }
+        } else {
+            let pem =
+                std::fs::read("./server_certs/self_signed/myca.pem").unwrap_or_else(|_| Vec::new());
+            if !pem.is_empty() {
+                let ca = tonic::transport::Certificate::from_pem(pem);
+                tls = tls.ca_certificate(ca);
+            }
+        }
+
+        endpoint = endpoint.tls_config(tls)?;
+    }
+
+    let channel = endpoint.connect().await?;
     let mut reflection_client = ServerReflectionClient::new(channel);
 
     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -854,7 +984,9 @@ async fn build_grpc_pool(
     .await?;
 
     // Using tonic-reflection API
-    let response = reflection_client
+    let response: tonic::Response<
+        tonic::Streaming<tonic_reflection::pb::v1::ServerReflectionResponse>,
+    > = reflection_client
         .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
         .await?;
     let mut response_stream = response.into_inner();
@@ -862,7 +994,7 @@ async fn build_grpc_pool(
     let mut current_services = Vec::new();
     if let Some(res) = response_stream.message().await? {
         if let Some(
-            tonic_reflection::pb::server_reflection_response::MessageResponse::ListServicesResponse(
+            tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(
                 list_res,
             ),
         ) = res.message_response
@@ -872,6 +1004,8 @@ async fn build_grpc_pool(
             }
         }
     }
+    // Explicitly drop tx after reading to prevent premature stream cancellation
+    drop(tx);
 
     let mut pool = DescriptorPool::new();
 
@@ -887,14 +1021,16 @@ async fn build_grpc_pool(
         })
         .await?;
 
-        let response = reflection_client
+        let response: tonic::Response<
+            tonic::Streaming<tonic_reflection::pb::v1::ServerReflectionResponse>,
+        > = reflection_client
             .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
             .await?;
         let mut response_stream = response.into_inner();
 
         if let Some(res) = response_stream.message().await? {
             if let Some(
-                tonic_reflection::pb::server_reflection_response::MessageResponse::FileDescriptorResponse(
+                tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(
                     fd_res,
                 ),
             ) = res.message_response

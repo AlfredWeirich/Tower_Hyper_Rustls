@@ -14,7 +14,8 @@ pub mod system {
     tonic::include_proto!("system");
 }
 
-use system::HealthStatus;
+// remove the whole `use` item
+// use system::HealthStatus;
 use system::LoginRequest;
 use system::MetricsQuery;
 use system::identity_service_client::IdentityServiceClient;

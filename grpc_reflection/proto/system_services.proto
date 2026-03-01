@@ -24,7 +24,10 @@ message AuthTokenResponse {
 // ----------------------------------------------------
 service SystemMetrics {
   rpc GetHealth (MetricsQuery) returns (HealthStatus);
+  rpc health (HealthQuery) returns (HealthStatus);
 }
+
+message HealthQuery {}
 
 message MetricsQuery {
   bool include_cpu = 1;

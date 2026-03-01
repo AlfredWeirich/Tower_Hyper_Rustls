@@ -73,6 +73,10 @@ where
         builder.pool_max_idle_per_host(max_idle);
     }
 
+    if pool_config.http2_only {
+        builder.http2_only(true);
+    }
+
     // You can add further generic options here (e.g. keeping TCP_NODELAY sync)
     // builder.http2_initial_stream_window_size(1024 * 1024);
 

@@ -62,7 +62,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # The service type that handles the request after passing through layers:
     # "Echo"   - Returns the request data as-is (Debug/Health checks)
     # "Router" - Forwards requests to upstreams defined in [Server.ReverseRoutes]
-    service = "Echo"
+    service = "Router"
 
     # --- Middleware Layers ---
     # Defines the execution pipeline. Layers are executed in the order listed.
@@ -70,7 +70,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # Options: "Timing", "Counter", "Logger", "Inspection", "JwtAuth", 
     #          "ConcurrencyLimit", "RateLimiter:Simple", "RateLimiter:TokenBucket"
     # enabled = ["Decompression","MaxPayload", "Logger",  "Inspection",  "Compression", "AltSvc"] 
-    enabled = [] 
+    enabled = ["Logger"] 
 
     # --- Decompression Bomb Protection ---
     [Server.Layers.Decompression]
@@ -116,6 +116,8 @@ pki_base_oid = "1.3.6.1.4.1.65111"
 
     [Server.AllowedPathes.POST]
     "/address" = ["^/address\\??city=[a-zA-Z]+$"]
+    "/api" = ["^/api/grpc/.*$"]
+    "/grpc" = ["^/grpc/.*$"]
 
     [Server.AllowedPathes.PUT]
     "/" = ["^/?$", "^/\\?id=\\d+$"]
@@ -135,13 +137,14 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     "/name"   = { upstreams = ["192.168.178.175:1337/name","192.168.178.175:1338/name"], strategy = "RoundRobin", allowed_roles = ["Admin"], cooldown_seconds = 5, max_retries = 3, active_health_check_interval = 15 }
     "/"       = { upstreams = ["192.168.178.175:1338", "192.168.178.175:1339"], strategy = "LeastConnections", allowed_roles = ["Admin", "Operator"] }
     "/help"   = { upstreams = ["192.168.178.175:1340/help","192.168.178.175:1341/help"], strategy = "RoundRobin", allowed_roles = ["Admin"] }
+    "/api/grpc"   = { upstreams = ["https://192.168.178.175:50051"], backend_type = "grpc", active_health_check_interval = 15 }
 
     # --- Upstream Connection Parameters ---
     [Server.RouterParams]
     # Protocol the gateway uses to talk to the backend (upstream).
     protocol = "https"
     # Auth method the gateway uses to authenticate against the backend.
-    authentication = "None"
+    authentication = "ClientCert"
     # CA used by the gateway to verify the backend's identity.
     ssl_root_certificate = "./server_certs/self_signed/myca.pem"
     # Client certificate/key if the backend requires mTLS from the gateway.

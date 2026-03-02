@@ -24,7 +24,7 @@ message AuthTokenResponse {
 // ----------------------------------------------------
 service SystemMetrics {
   rpc GetSystemStatus (MetricsQuery) returns (HealthStatus);
-  rpc health (HealthQuery) returns (HealthStatus);
+  rpc health (HealthQuery) returns (HealthScore);
 }
 
 message HealthQuery {}
@@ -32,6 +32,10 @@ message HealthQuery {}
 message MetricsQuery {
   bool include_cpu = 1;
   bool include_memory = 2;
+}
+
+message HealthScore {
+  uint32 score = 1; // 0 to 100
 }
 
 message HealthStatus {

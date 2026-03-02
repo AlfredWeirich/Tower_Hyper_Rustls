@@ -101,7 +101,7 @@ impl Service<Request<SrvBody>> for EchoService {
 
                 // ── GET /health ──────────────────────────────────────
                 (&hyper::Method::GET, "/health") => {
-                    let msg = r#"{"status": "healthy", "message": "echo service is alive"}"#;
+                    let msg = r#"{"score": 100, "message": "echo service is alive"}"#;
                     let body = Full::new(Bytes::from_static(msg.as_bytes()))
                         .map_err(SrvError::from)
                         .boxed();

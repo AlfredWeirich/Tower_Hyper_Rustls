@@ -626,25 +626,87 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
                                     // Dispatch the request asynchronously over the connection pool
                                     let req = req_builder.body(req_body).unwrap();
                                     match client.request(req).await {
-                                        Ok(resp) => {
+                                        Ok(mut resp) => {
                                             // We consider any 200 OK status as a healthy indication
                                             let is_ok = resp.status() == StatusCode::OK;
+                                            let mut health_score_ok = true;
 
-                                            if is_ok {
+                                            // If it's a gRPC health check, parse the HealthScore
+                                            if is_ok && is_grpc && grpc_health_path.is_some() {
+                                                use http_body_util::BodyExt;
+                                                if let Ok(bytes) = resp.body_mut().collect().await.map(|b| b.to_bytes()) {
+                                                    // Frame format: 1 byte compressed flag, 4 bytes length, then protobuf payload
+                                                    if bytes.len() >= 5 {
+                                                        let payload_len = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
+                                                        if bytes.len() >= 5 + payload_len {
+                                                            let raw_payload = &bytes[5..5 + payload_len];
+
+                                                            // HealthScore is { uint32 score = 1; }
+                                                            // For small varints like <= 127 in field 1, it's just `0x08 <val>`
+                                                            // We can decode the varint manually, or use a dynamic message.
+                                                            // Since we don't have statically compiled prost bindings in `server`,
+                                                            // let's do a simple manual decode of the protobuf payload.
+                                                            let mut healthy = false;
+                                                            if raw_payload.len() >= 2 && raw_payload[0] == 0x08 { // field 1, varint
+                                                                // Decode varint (simplified assuming score is 0-100, so it fits in 1 byte)
+                                                                let score = raw_payload[1];
+                                                                target_arc.upstreams[idx].current_score.store(score as usize, std::sync::atomic::Ordering::Relaxed);
+                                                                if score > 0 {
+                                                                    healthy = true;
+                                                                }
+                                                            }
+
+                                                            if !healthy {
+                                                                health_score_ok = false;
+                                                            }
+                                                        } else {
+                                                            health_score_ok = false; // Truncated
+                                                        }
+                                                    } else {
+                                                        health_score_ok = false; // Too short to be a valid frame
+                                                    }
+                                                } else {
+                                                    health_score_ok = false; // Failed to read body
+                                                }
+                                            } else if is_ok && !is_grpc {
+                                                // For REST, parse the JSON {"score": 100} response
+                                                use http_body_util::BodyExt;
+                                                if let Ok(bytes) = resp.body_mut().collect().await.map(|b| b.to_bytes()) {
+                                                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                        if let Some(score) = json.get("score").and_then(|s| s.as_u64()) {
+                                                            target_arc.upstreams[idx].current_score.store(score as usize, std::sync::atomic::Ordering::Relaxed);
+                                                            if score == 0 {
+                                                                health_score_ok = false;
+                                                            }
+                                                        } else {
+                                                            // if no score field exists, we should probably consider it unhealthy based on the new convention
+                                                            health_score_ok = false;
+                                                        }
+                                                    } else {
+                                                        health_score_ok = false; // Invalid JSON
+                                                    }
+                                                } else {
+                                                    health_score_ok = false; // Failed to read body
+                                                }
+                                            }
+
+                                            if is_ok && health_score_ok {
                                                 // If the node was previously considered dead, revive it in the LB
                                                 if !target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
                                                     info!("{}: Health check recovered '{}'", server_name, final_uri);
                                                     target_arc.upstreams[idx].is_alive.store(true, std::sync::atomic::Ordering::Relaxed);
                                                 }
                                             } else {
+                                                target_arc.upstreams[idx].current_score.store(0, std::sync::atomic::Ordering::Relaxed);
                                                 // If it returns non-200 and was marked alive, consider it dead
                                                 if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
-                                                    tracing::warn!("{}: Health check failed status {} for '{}'", server_name, resp.status(), final_uri);
+                                                    tracing::warn!("{}: Health check failed status {} for '{}' (Score OK: {})", server_name, resp.status(), final_uri, health_score_ok);
                                                     target_arc.upstreams[idx].is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
                                                 }
                                             }
                                         }
                                         Err(e) => {
+                                            target_arc.upstreams[idx].current_score.store(0, std::sync::atomic::Ordering::Relaxed);
                                             // Network errors or timeout means the node is dead/unresponsive
                                             if target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
                                                 tracing::warn!("{}: Health check failed for '{}': {}", server_name, final_uri, e);

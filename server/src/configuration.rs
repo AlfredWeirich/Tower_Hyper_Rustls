@@ -244,6 +244,7 @@ pub enum LbStrategy {
     Random,
     LeastConnections,
     Sticky,
+    HighestScore,
 }
 
 /// A single upstream node within a load-balanced route target.
@@ -257,6 +258,8 @@ pub struct UpstreamNode {
     pub is_alive: std::sync::atomic::AtomicBool,
     /// Timestamp of the last connection failure (seconds since UNIX epoch).
     pub last_failure_time: std::sync::atomic::AtomicU64,
+    /// The health score of this node (0-100) reported by active health checks.
+    pub current_score: std::sync::atomic::AtomicUsize,
 }
 
 impl UpstreamNode {
@@ -385,6 +388,13 @@ impl RouteTarget {
                 };
                 slice[hash % slice.len()]
             }
+            LbStrategy::HighestScore => slice
+                .into_iter()
+                .max_by_key(|node| {
+                    node.current_score
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .unwrap(),
         }
     }
 }
@@ -864,6 +874,7 @@ impl ServerConfig {
                         active_connections: std::sync::atomic::AtomicUsize::new(0),
                         is_alive: std::sync::atomic::AtomicBool::new(true),
                         last_failure_time: std::sync::atomic::AtomicU64::new(0),
+                        current_score: std::sync::atomic::AtomicUsize::new(0),
                     });
                 }
 

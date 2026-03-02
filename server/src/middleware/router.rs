@@ -268,7 +268,7 @@ impl RouterService {
         let config = &self.config;
         if config.parsed_routes.is_empty() {
             return Ok(build_error_response(
-                r#"{"status": "healthy", "message": "no routes configured"}"#,
+                r#"{"score": 100, "message": "no routes configured"}"#,
                 StatusCode::OK,
             ));
         }
@@ -288,12 +288,12 @@ impl RouterService {
 
         if any_alive {
             Ok(build_error_response(
-                r#"{"status": "healthy", "message": "nodes available"}"#,
+                r#"{"score": 100, "message": "nodes available"}"#,
                 StatusCode::OK,
             ))
         } else {
             Ok(build_error_response(
-                r#"{"status": "unhealthy", "message": "no upstream nodes available"}"#,
+                r#"{"score": 0, "message": "no upstream nodes available"}"#,
                 StatusCode::SERVICE_UNAVAILABLE,
             ))
         }
@@ -957,17 +957,18 @@ pub async fn build_grpc_pool(
     backend_base_uri: &Uri,
     router_params: Option<&crate::configuration::RouterParams>,
 ) -> Result<Arc<DescriptorPool>, Box<dyn std::error::Error + Send + Sync>> {
-    let _host = backend_base_uri.host().unwrap_or("localhost");
+    let host = backend_base_uri.host().unwrap_or("localhost");
     let port = backend_base_uri.port_u16().unwrap_or(80);
     let scheme = backend_base_uri.scheme_str().unwrap_or("http");
 
-    // Usually tonic channel is built from a static url, so we compose it
-    let target = format!("{}://localhost:{}", scheme, port);
+    // Compose the target URI using the actual defined upstream node
+    let target = format!("{}://{}:{}", scheme, host, port);
 
     let mut endpoint = tonic::transport::Channel::from_shared(target)?;
 
     if scheme == "https" {
-        let mut tls = tonic::transport::ClientTlsConfig::new().domain_name("localhost");
+        // Must configure the expected TLS domain name, usually we'll loosen this per the IP
+        let mut tls = tonic::transport::ClientTlsConfig::new().domain_name(host);
 
         // Root CA
         if let Some(params) = router_params {

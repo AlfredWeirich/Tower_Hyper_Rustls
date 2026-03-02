@@ -109,13 +109,10 @@ impl SystemMetrics for MySystemMetrics {
     async fn health(
         &self,
         _request: Request<HealthQuery>,
-    ) -> Result<Response<HealthStatus>, Status> {
+    ) -> Result<Response<system::HealthScore>, Status> {
         debug!("SystemMetrics handling health() request");
-        Ok(Response::new(HealthStatus {
-            status: "Healthy".into(),
-            cpu_usage_percent: 0.0,
-            memory_usage_mb: 0.0,
-            uptime_seconds: 0,
+        Ok(Response::new(system::HealthScore {
+            score: 100, // 0 to 100 health score
         }))
     }
 }

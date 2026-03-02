@@ -23,7 +23,7 @@ message AuthTokenResponse {
 // 2. System Metrics
 // ----------------------------------------------------
 service SystemMetrics {
-  rpc GetHealth (MetricsQuery) returns (HealthStatus);
+  rpc GetSystemStatus (MetricsQuery) returns (HealthStatus);
   rpc health (HealthQuery) returns (HealthStatus);
 }
 

@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         include_memory: true,
     });
 
-    let response = metrics_client.get_health(request).await?;
+    let response = metrics_client.get_system_status(request).await?;
     let status = response.into_inner();
     println!("RESPONSE={:?}", status);
     Ok(())

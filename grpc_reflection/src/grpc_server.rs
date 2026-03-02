@@ -4,6 +4,8 @@
 //! It implements the business logic defined in `system_services.proto` and, crucially,
 //! exposes the gRPC Server Reflection endpoint so dynamic clients (like our Router)
 //! can query its schema at runtime.
+//!
+//! usage: curl -v -k -X POST -H "Content-Type: application/json" -d '{"includeCpu":true,"includeMemory":true}' https://192.168.178.175:1336/api/grpc/system.SystemMetrics/GetHealth
 
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
@@ -14,7 +16,7 @@ use tonic::{
     transport::{Certificate, Identity, Server, ServerTlsConfig},
 };
 use tonic_reflection::server::Builder as ReflectionBuilder;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, trace};
 
 // This module includes the Rust code that `build.rs` automatically generated
 // from our `system_services.proto` file.
@@ -49,6 +51,7 @@ impl IdentityService for MyIdentityService {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<AuthTokenResponse>, Status> {
+        // Extract the inner request
         let req = request.into_inner();
         info!("IdentityService handling Login");
 
@@ -73,10 +76,11 @@ pub struct MySystemMetrics {}
 #[tonic::async_trait]
 impl SystemMetrics for MySystemMetrics {
     #[instrument(skip_all)]
-    async fn get_health(
+    async fn get_system_status(
         &self,
         request: Request<MetricsQuery>,
     ) -> Result<Response<HealthStatus>, Status> {
+        // trace!("SystemMetrics handling GetHealth request {:?}", request.metadata());
         let req = request.into_inner();
         debug!(
             "SystemMetrics handling GetHealth request: include_cpu={}, include_memory={}",

@@ -542,17 +542,33 @@ impl Service<Request<SrvBody>> for RouterService {
                 parts.version
             };
 
-            // Buffer the request body entirely to allow retrying proxy connections safely
-            let req_body_bytes = match body.collect().await {
-                Ok(c) => c.to_bytes(),
-                Err(e) => {
-                    error!("{}: Failed to read request body: {}", server_name, e);
-                    return Ok(build_error_response("Bad Request", StatusCode::BAD_REQUEST));
-                }
-            };
+            // Body handling for retries vs streaming
+            enum RequestBody {
+                Stream(SrvBody),
+                Buffered(bytes::Bytes),
+            }
 
             let mut failed_nodes = Vec::new();
             let max_retries = route_info.target.max_retries;
+
+            // For gRPC transcoding, we MUST buffer the body to parse JSON,
+            // but for standard REST proxying we can stream it directly if there are no retries,
+            // OR buffer it if retries are enabled and the body isn't huge.
+            let is_grpc = route_info.backend_type == RouteBackendType::Grpc;
+            let can_stream = max_retries == 0 && !is_grpc;
+
+            let mut request_body = if can_stream {
+                RequestBody::Stream(body)
+            } else {
+                match body.collect().await {
+                    Ok(c) => RequestBody::Buffered(c.to_bytes()),
+                    Err(e) => {
+                        error!("{}: Failed to read request body: {}", server_name, e);
+                        return Ok(build_error_response("Bad Request", StatusCode::BAD_REQUEST));
+                    }
+                }
+            };
+
             let mut attempts = 0;
 
             loop {
@@ -685,7 +701,13 @@ impl Service<Request<SrvBody>> for RouterService {
                         }
                     };
 
-                    let mut deserializer = serde_json::Deserializer::from_slice(&req_body_bytes);
+                    let RequestBody::Buffered(req_body_bytes) = &request_body else {
+                        return Ok(build_error_response(
+                            "Streaming not supported for gRPC transcoding yet",
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ));
+                    };
+                    let mut deserializer = serde_json::Deserializer::from_slice(req_body_bytes);
                     let dynamic_req_msg = match method_desc.input().deserialize(&mut deserializer) {
                         Ok(msg) => msg,
                         Err(e) => {
@@ -839,9 +861,25 @@ impl Service<Request<SrvBody>> for RouterService {
                     }
                 } else {
                     // Standard REST proxy handling
-                    let boxed_body: ServiceRespBody = Full::new(req_body_bytes.clone())
-                        .map_err(SrvError::from)
-                        .boxed();
+                    let boxed_body: ServiceRespBody = match &mut request_body {
+                        RequestBody::Stream(_b) => {
+                            // We can only stream once! If this fails, we cannot retry.
+                            // But `can_stream` guarantees `max_retries == 0`.
+                            // Take ownership of the body by swapping it out.
+                            let mut temp_body: RequestBody =
+                                RequestBody::Buffered(bytes::Bytes::new());
+                            std::mem::swap(&mut temp_body, &mut request_body);
+
+                            if let RequestBody::Stream(taken_body) = temp_body {
+                                taken_body
+                            } else {
+                                unreachable!()
+                            }
+                        }
+                        RequestBody::Buffered(bytes) => {
+                            Full::new(bytes.clone()).map_err(SrvError::from).boxed()
+                        }
+                    };
 
                     let mut proxy_req = Request::new(boxed_body);
                     *proxy_req.method_mut() = original_method.clone();

@@ -64,5 +64,3 @@ tonic-reflection = { version = "0.12.3", features = ["server"] }
 name = "server"
 path = "src/server.rs"
 
-[build-dependencies]
-tonic-build = "0.12"

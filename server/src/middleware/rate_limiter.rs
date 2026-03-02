@@ -29,7 +29,7 @@ use std::{
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode};
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use tower::{Layer, Service};
 use tracing::{info, trace, warn};
 
@@ -83,8 +83,9 @@ impl<S> Layer<S> for SimpleRateLimiterLayer {
 
 /// Service that enforces the simple fixed-window rate limit.
 ///
-/// Shared state is protected by a Tokio [`Mutex`] (async-aware) so that
-/// checking + updating the timestamp is atomic from the async perspective.
+/// Shared state is protected by a standard [`std::sync::Mutex`] because the
+/// critical section (updating the timestamp) is extremely short and does not
+/// involve any `.await` points. This is much faster than an async mutex.
 #[derive(Clone)]
 pub struct SimpleRateLimiterService<S> {
     /// The inner (downstream) service.
@@ -149,10 +150,18 @@ where
         let server_name = self.server_name;
 
         Box::pin(async move {
-            let mut state = state.lock().await;
-            let now = Instant::now();
+            let allowed = {
+                let mut state = state.lock().unwrap();
+                let now = Instant::now();
+                let allowed = now < state.next_allowed;
+                if allowed {
+                    // Update the next allowed instant
+                    state.next_allowed = now + delay;
+                }
+                allowed
+            };
 
-            if now < state.next_allowed {
+            if allowed {
                 warn!("{}: Too Many Requests (simple limiter)", server_name);
                 // #[cfg(feature = "boxed_body")]
                 let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
@@ -163,10 +172,6 @@ where
                 *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
                 return Ok(response);
             }
-
-            // Update the next allowed instant and drop the lock.
-            state.next_allowed = now + delay;
-            drop(state);
 
             trace!("{}: Allowed request", server_name);
             inner.call(req).await
@@ -362,17 +367,18 @@ where
         let server_name = self.server_name;
 
         Box::pin(async move {
-            let mut bucket = state.lock().await;
-            bucket.refill(capacity, refill_tokens, interval);
+            let (try_consume, current_tokens) = {
+                let mut bucket = state.lock().unwrap();
+                bucket.refill(capacity, refill_tokens, interval);
+                let consumed = bucket.try_consume();
+                (consumed, bucket.tokens)
+            };
 
-            if bucket.try_consume() {
+            if try_consume {
                 info!(
                     "{}: Token consumed (bucket limiter). Remaining: {}",
-                    server_name, bucket.tokens
+                    server_name, current_tokens
                 );
-                // Drop the lock before calling the inner service to avoid
-                // holding it during potentially long-running downstream work.
-                drop(bucket);
                 inner.call(req).await
             } else {
                 warn!(

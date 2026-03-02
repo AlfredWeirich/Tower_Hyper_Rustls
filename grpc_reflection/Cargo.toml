@@ -5,7 +5,7 @@ edition = "2024"
 
 [[bin]]
 name = "grpc_server"
-path = "src/server.rs"
+path = "src/grpc_server.rs"
 
 
 [[bin]]

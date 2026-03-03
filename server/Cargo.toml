@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mimalloc = { version = "0.1", default-features = false }
 anyhow = "1.0.98"
 asn1-rs = { version = "0.7.1", features = ["bigint"] }
 async-compression = { version = "0.4", features = ["tokio", "gzip", "brotli"] }
@@ -41,6 +40,7 @@ tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 x509-parser = "0.18.0"
+mimalloc = { version = "*", features = ["v3"] }
 
 
 # Optional/Disabled dependencies

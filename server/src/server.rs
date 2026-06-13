@@ -58,6 +58,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::HashMap;
 
 // === External Crates ===
 use anyhow::{Context, Error};
@@ -154,14 +155,14 @@ async fn main_async(config: Arc<Config>) -> Result<(), Error> {
     let mut server_join_set = tokio::task::JoinSet::new();
 
     // Map: port -> (CancellationToken, Arc<ServerConfig>, Arc<Mutex<BoxedCloneService>>)
-    let mut active_servers: std::collections::HashMap<
+    let mut active_servers: HashMap<
         u16,
         (
             CancellationToken,
             Arc<ServerConfig>,
             Arc<Mutex<BoxedCloneService>>,
         ),
-    > = std::collections::HashMap::new();
+    > = HashMap::new();
 
     // Iterate through all configured servers and spawn tasks for those that are enabled.
     // Each enabled server gets its own cancellation token, configuration snapshot, and
@@ -1286,7 +1287,7 @@ fn build_rustls_config(config: &ServerConfig) -> Result<RustlsServerConfig, Erro
 /// # Arguments
 ///
 /// * `log_dir` - An optional directory path. If provided, logs will also be written to rolling files
-///               in this directory (rotated daily). If `None`, logs are written only to stdout.
+///   in this directory (rotated daily). If `None`, logs are written only to stdout.
 ///
 /// By default, it uses the `RUST_LOG` environment variable filter (defaulting to "info").
 fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {

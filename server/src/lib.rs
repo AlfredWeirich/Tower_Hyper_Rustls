@@ -228,7 +228,8 @@ impl ConnectionHandler {
     /// * `service` – The boxed, cloneable Tower service stack.
     /// * `addr`    – The remote peer's socket address.
     /// * `oids`    – OID strings extracted from the client's X.509 certificate.
-    ///              Each OID is mapped to a [`UserRole`] via the global config.
+    ///
+    /// Each OID is mapped to a [`UserRole`] via the global config.
     ///
     /// # Role resolution logic
     ///

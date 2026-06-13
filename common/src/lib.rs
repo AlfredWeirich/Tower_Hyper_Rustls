@@ -71,7 +71,7 @@ pub fn load_certs(path: &str, server_name: &str) -> Vec<CertificateDer<'static>>
 /// # Panics
 ///
 /// Panics if the file cannot be opened, contains no recognised key, or
-/// has a PEM parse error.
+///   has a PEM parse error.
 // pub fn load_single_key(path: &str, server_name: &str) -> PrivateKeyDer<'static> {
 //     // Read the private key file contents into memory
 //     let key_data = std::fs::read(path).unwrap_or_else(|_| {

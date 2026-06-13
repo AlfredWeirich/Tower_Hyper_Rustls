@@ -123,13 +123,11 @@ where
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<usize>().ok())
-        {
-            if content_length > max_bytes {
+            && content_length > max_bytes {
                 let msg = "Payload too large (Header check)";
                 tracing::warn!("{}: {}", server_name, msg);
                 return Box::pin(async move { Ok(build_413_response(msg)) });
             }
-        }
 
         // ── Stage 2: Wrap body in LimitedBody for streaming enforcement ──
         let (parts, body) = req.into_parts();

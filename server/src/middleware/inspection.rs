@@ -52,8 +52,8 @@ impl InspectionLayer {
     /// Create a new InspectionLayer with rules and a server name.
     pub fn new(rules: Arc<CompiledAllowedPathes>, server_name: &'static str) -> Self {
         Self {
-            rules: rules,
-            server_name: server_name,
+            rules,
+            server_name,
         }
     }
 }

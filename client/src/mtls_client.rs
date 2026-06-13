@@ -80,7 +80,6 @@ use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use tracing::{error, trace};
 
 // === Internal Modules ===
-use common;
 
 // =============================================================================
 // Entrypoint
@@ -690,11 +689,10 @@ fn prepare_request_builder(
         .method(cli.method.to_uppercase().as_str())
         .uri(uri);
 
-    if cli.security == Protocol::Jwt {
-        if let Some(token) = jwt_token {
+    if cli.security == Protocol::Jwt
+        && let Some(token) = jwt_token {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
-    }
 
     builder
 }

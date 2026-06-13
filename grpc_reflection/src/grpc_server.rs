@@ -16,7 +16,7 @@ use tonic::{
     transport::{Certificate, Identity, Server, ServerTlsConfig},
 };
 use tonic_reflection::server::Builder as ReflectionBuilder;
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument};
 
 // This module includes the Rust code that `build.rs` automatically generated
 // from our `system_services.proto` file.

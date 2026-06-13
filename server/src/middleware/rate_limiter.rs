@@ -69,7 +69,7 @@ impl SimpleRateLimiterLayer {
     pub fn new(per: Duration, server_name: &'static str) -> Self {
         Self {
             limit_duration: per,
-            server_name: server_name,
+            server_name,
         }
     }
 }
@@ -230,7 +230,7 @@ impl TokenBucketRateLimiterLayer {
             capacity,
             refill_tokens,
             interval,
-            server_name: server_name,
+            server_name,
         }
     }
 }

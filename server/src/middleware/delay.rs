@@ -45,7 +45,7 @@ impl DelayLayer {
     pub fn new(delay: Duration, server_name: &'static str) -> Self {
         Self {
             delay,
-            server_name: server_name,
+            server_name,
         }
     }
 }

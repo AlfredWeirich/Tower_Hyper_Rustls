@@ -167,16 +167,16 @@ pub fn tls_config(
             })?;
 
         // Attach verifier and a dynamic cert resolver to the config builder
-        let config = config_builder
+        
+        config_builder
             .with_client_cert_verifier(client_verifier)
-            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)));
-        config
+            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)))
     } else {
         // No client authentication; set up standard HTTPS only
-        let config = config_builder
+        
+        config_builder
             .with_no_client_auth()
-            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)));
-        config
+            .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)))
     };
 
     let mut config = config;
@@ -250,7 +250,7 @@ pub fn extract_oids_from_cert(cert_der: &[u8]) -> Vec<String> {
             for &base_part in base_components {
                 match oid_iter.next() {
                     Some(cert_part) => {
-                        if (cert_part as u64) != base_part {
+                        if cert_part != base_part {
                             is_match = false;
                             break;
                         }

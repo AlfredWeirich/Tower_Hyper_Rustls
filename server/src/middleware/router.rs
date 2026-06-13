@@ -352,9 +352,9 @@ impl RouterService {
     ) -> Result<(), Response<ServiceRespBody>> {
         // ── Cascading Router Protection ──────────────────────────
         let mut max_forwards = 10;
-        if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS) {
-            if let Ok(mf_str) = mf_val.to_str() {
-                if let Ok(mut mf) = mf_str.parse::<u8>() {
+        if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS)
+            && let Ok(mf_str) = mf_val.to_str()
+                && let Ok(mut mf) = mf_str.parse::<u8>() {
                     if mf == 0 {
                         warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
                         return Err(build_error_response(
@@ -365,8 +365,6 @@ impl RouterService {
                     mf -= 1;
                     max_forwards = mf;
                 }
-            }
-        }
         original_headers.insert(
             header::MAX_FORWARDS,
             header::HeaderValue::from(max_forwards as u16),
@@ -620,11 +618,10 @@ impl Service<Request<SrvBody>> for RouterService {
                     Self::build_upstream_uri(backend_base_uri, &matched.params, &parts.uri)?;
 
                 // ── Stage 6: Forwarding ──────────────────────────────────
-                if let Some(auth) = target_uri.authority() {
-                    if let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
+                if let Some(auth) = target_uri.authority()
+                    && let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
                         current_headers.insert(header::HOST, host_val);
                     }
-                }
 
                 if route_info.backend_type == RouteBackendType::Grpc {
                     // Try to lazy load the descriptor pool if we don't have it yet
@@ -988,18 +985,15 @@ pub async fn build_grpc_pool(
             }
 
             // Client Identity (mTLS)
-            if params.authentication == crate::configuration::AuthenticationMethod::ClientCert {
-                if let (Some(cert_path), Some(key_path)) =
+            if params.authentication == crate::configuration::AuthenticationMethod::ClientCert
+                && let (Some(cert_path), Some(key_path)) =
                     (&params.ssl_client_certificate, &params.ssl_client_key)
-                {
-                    if let (Ok(cert_pem), Ok(key_pem)) =
+                    && let (Ok(cert_pem), Ok(key_pem)) =
                         (std::fs::read(cert_path), std::fs::read(key_path))
                     {
                         let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
                         tls = tls.identity(identity);
                     }
-                }
-            }
         } else {
             let pem =
                 std::fs::read("./server_certs/self_signed/myca.pem").unwrap_or_else(|_| Vec::new());
@@ -1031,8 +1025,8 @@ pub async fn build_grpc_pool(
     let mut response_stream = response.into_inner();
 
     let mut current_services = Vec::new();
-    if let Some(res) = response_stream.message().await? {
-        if let Some(
+    if let Some(res) = response_stream.message().await?
+        && let Some(
             tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(
                 list_res,
             ),
@@ -1042,7 +1036,6 @@ pub async fn build_grpc_pool(
                 current_services.push(service.name);
             }
         }
-    }
     // Explicitly drop tx after reading to prevent premature stream cancellation
     drop(tx);
 
@@ -1067,8 +1060,8 @@ pub async fn build_grpc_pool(
             .await?;
         let mut response_stream = response.into_inner();
 
-        if let Some(res) = response_stream.message().await? {
-            if let Some(
+        if let Some(res) = response_stream.message().await?
+            && let Some(
                 tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(
                     fd_res,
                 ),
@@ -1079,7 +1072,6 @@ pub async fn build_grpc_pool(
                     pool.add_file_descriptor_proto(fd_proto)?;
                 }
             }
-        }
     }
 
     Ok(Arc::new(pool))

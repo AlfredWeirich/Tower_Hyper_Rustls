@@ -83,7 +83,7 @@ impl SrvCompressionLayer {
     /// Create a new `SrvCompressionLayer` with a server name for logging.
     pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: server_name,
+            server_name,
         }
     }
 }
@@ -188,7 +188,7 @@ where
                 let data_stream = body_stream.filter_map(|r| async {
                     match r {
                         Ok(frame) => frame.into_data().ok().map(Ok),
-                        Err(e) => Some(Err(io::Error::new(io::ErrorKind::Other, e))),
+                        Err(e) => Some(Err(io::Error::other(e))),
                     }
                 });
                 let body_reader = StreamReader::new(Box::pin(data_stream));
@@ -340,7 +340,7 @@ where
             let data_stream = body_stream.filter_map(|r| async {
                 match r {
                     Ok(frame) => frame.into_data().ok().map(Ok),
-                    Err(e) => Some(Err(io::Error::new(io::ErrorKind::Other, e))),
+                    Err(e) => Some(Err(io::Error::other(e))),
                 }
             });
             let body_reader = StreamReader::new(Box::pin(data_stream));
@@ -421,8 +421,7 @@ impl<R: AsyncRead> AsyncRead for LimitedReader<R> {
     ) -> Poll<io::Result<()>> {
         // If the limit has already been reached, reject immediately.
         if self.remaining == 0 {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Poll::Ready(Err(io::Error::other(
                 "Decompressed payload exceeds maximum allowed size",
             )));
         }
@@ -436,8 +435,7 @@ impl<R: AsyncRead> AsyncRead for LimitedReader<R> {
                 if bytes_read > *this.remaining {
                     // Limit exceeded — zero out remaining and return an error.
                     *this.remaining = 0;
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    Poll::Ready(Err(io::Error::other(
                         "Decompressed payload exceeds maximum allowed size",
                     )))
                 } else {

@@ -51,7 +51,7 @@ impl CountingLayer {
     /// services created by this layer. It is initialized to `0`.
     pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: server_name,
+            server_name,
             counter: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -82,7 +82,7 @@ impl<S> CountingService<S> {
         Self {
             inner,
             count: counter,
-            server_name: server_name,
+            server_name,
         }
     }
 }
@@ -121,7 +121,7 @@ where
                 // `fetch_add` returns the *previous* value; add 1 to get the new total.
                 let old = this.count.fetch_add(1, Ordering::Relaxed) + 1;
                 // Log the first request, then every 500 requests to save CPU/IO
-                if old == 1 || old % 500 == 0 {
+                if old == 1 || old.is_multiple_of(500) {
                     tracing::info!("{}: Processed {} requests", this.server_name, old);
                 }
                 Poll::Ready(result)

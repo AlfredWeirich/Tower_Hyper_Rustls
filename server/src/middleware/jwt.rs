@@ -67,7 +67,7 @@ impl JwtAuthLayer {
 
         Self {
             decoding_keys: Arc::new(decoding_keys),
-            server_name: server_name,
+            server_name,
         }
     }
 }

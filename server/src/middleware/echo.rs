@@ -185,7 +185,7 @@ fn load_test_echo_sync() -> String {
     let mut data = vec![1.0f64; 32_000_000]; // 256MB
     for i in 0..1 {
         for val in data.iter_mut() {
-            *val = *val + (i as f64).sin().cos();
+            *val += (i as f64).sin().cos();
         }
     }
     let checksum: f64 = data.iter().sum();

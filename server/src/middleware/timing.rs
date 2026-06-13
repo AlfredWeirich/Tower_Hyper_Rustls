@@ -41,7 +41,7 @@ impl TimingLayer {
     ///   (e.g. `"api-server"`).
     pub fn new(server_name: &'static str) -> Self {
         Self {
-            server_name: server_name,
+            server_name,
         }
     }
 }

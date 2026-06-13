@@ -79,8 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut response_stream = response.into_inner();
 
     let mut current_services = Vec::new();
-    if let Some(res) = response_stream.message().await? {
-        if let Some(
+    if let Some(res) = response_stream.message().await?
+        && let Some(
             reflection::server_reflection_response::MessageResponse::ListServicesResponse(list_res),
         ) = res.message_response
         {
@@ -88,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 current_services.push(service.name);
             }
         }
-    }
 
     let mut pool = DescriptorPool::new();
 
@@ -113,8 +112,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await?;
         let mut response_stream = response.into_inner();
 
-        if let Some(res) = response_stream.message().await? {
-            if let Some(
+        if let Some(res) = response_stream.message().await?
+            && let Some(
                 reflection::server_reflection_response::MessageResponse::FileDescriptorResponse(
                     fd_res,
                 ),
@@ -127,7 +126,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     pool.add_file_descriptor_proto(fd_proto)?;
                 }
             }
-        }
     }
 
     let pool = Arc::new(pool);

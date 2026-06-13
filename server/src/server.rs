@@ -123,7 +123,7 @@ fn main() -> Result<(), Error> {
     let config = Config::init(&arg)?;
 
     // Determine the number of Tokio worker threads. Defaults to 2x logical CPUs if not specified.
-    let tokio_threads = config.tokio_threads.unwrap_or_else(|| num_cpus::get());
+    let tokio_threads = config.tokio_threads.unwrap_or_else(num_cpus::get);
 
     // Setup the tracing/logging system (stdout and optional file appender).
     // Use _guard to keep the non-blocking appender alive until the end of main.
@@ -1076,15 +1076,14 @@ async fn handle_h3_connection(
 
     // 2. Extract OIDs (Strings)
     let mut oids = Vec::new();
-    if let Some(identity) = connection.peer_identity() {
-        if let Some(certs) =
+    if let Some(identity) = connection.peer_identity()
+        && let Some(certs) =
             identity.downcast_ref::<Vec<rustls_pki_types::CertificateDer<'static>>>()
         {
             for c in certs {
                 oids.extend(extract_oids_from_cert(c.as_ref()));
             }
         }
-    }
 
     // --- OPTIMIZATION START ---
     // Convert OIDs (Strings) to Roles (Enums) ONCE for the whole connection.
@@ -1144,11 +1143,10 @@ async fn handle_h3_connection(
                                     .is_ok()
                                 {
                                     while let Some(frame) = res_body.frame().await {
-                                        if let Ok(data) = frame.unwrap().into_data() {
-                                            if sender.send_data(data).await.is_err() {
+                                        if let Ok(data) = frame.unwrap().into_data()
+                                            && sender.send_data(data).await.is_err() {
                                                 break;
                                             }
-                                        }
                                     }
                                     let _ = sender.finish().await;
                                 }
@@ -1321,7 +1319,7 @@ fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {
         tracing::subscriber::set_global_default(subscriber)?;
 
         // Return the guard so it's not dropped
-        return Ok(Some(_guard));
+        Ok(Some(_guard))
     } else {
         let subscriber = Registry::default().with(env_filter).with(stdout_layer);
         tracing::subscriber::set_global_default(subscriber)?;

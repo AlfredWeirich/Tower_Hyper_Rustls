@@ -51,10 +51,7 @@ pub struct InspectionLayer {
 impl InspectionLayer {
     /// Create a new InspectionLayer with rules and a server name.
     pub fn new(rules: Arc<CompiledAllowedPathes>, server_name: &'static str) -> Self {
-        Self {
-            rules,
-            server_name,
-        }
+        Self { rules, server_name }
     }
 }
 
@@ -106,8 +103,7 @@ where
     ///
     /// ## Allowed requests
     ///
-    /// Clones the inner service (required by Tower's ownership model) and
-    /// forwards the request.
+    /// Forwards the request to the inner service without cloning it.
     ///
     /// ## Blocked requests
     ///
@@ -127,8 +123,8 @@ where
         let allow = self.allowed_pathes.is_allowed(method, path, query);
 
         if allow {
-            let mut inner = self.inner.clone();
-            Box::pin(async move { inner.call(req).await })
+            let fut = self.inner.call(req);
+            Box::pin(async move { fut.await })
         } else {
             // Log the failure (Captured variables for the log)
             let method_owned = method.to_string(); // Only allocate if we actually block

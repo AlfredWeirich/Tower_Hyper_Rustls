@@ -40,9 +40,7 @@ impl TimingLayer {
     /// * `server_name` – A `'static` label included in every log line
     ///   (e.g. `"api-server"`).
     pub fn new(server_name: &'static str) -> Self {
-        Self {
-            server_name,
-        }
+        Self { server_name }
     }
 }
 
@@ -105,12 +103,13 @@ where
     /// The log line uses `INFO` level and includes the server name and
     /// the duration formatted to two decimal places (e.g. `"42.17ms"`).
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let mut inner = self.inner.clone();
         let server_name = self.server_name;
         let start = Instant::now();
 
+        let fut = self.inner.call(req);
+
         Box::pin(async move {
-            let result = inner.call(req).await;
+            let result = fut.await;
             let duration = start.elapsed();
             tracing::info!("{}: == Took {:.2?}", server_name, duration);
             result

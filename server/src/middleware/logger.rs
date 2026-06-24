@@ -132,12 +132,8 @@ where
         );
         // === EXTENSION TRACING END ===
 
-        // Use 'self.inner.clone()' because 'inner' must be owned by the async block
-        // but 'self' is borrowed mutably.
-        let mut inner = self.inner.clone();
-
         // Note: 'req' is moved into 'inner.call' here, so we had to inspect extensions BEFORE this line.
-        let fut = inner.call(req);
+        let fut = self.inner.call(req);
 
         Box::pin(async move {
             let response = fut.await;

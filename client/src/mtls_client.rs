@@ -150,7 +150,10 @@ async fn run_h2(cli: &Cli) -> Result<(), Error> {
 
     // --- Sliding-window request loop ---
     run_sliding_window(total_requests, concurrency, "Request failed", || {
-        do_request_h2(&client, cli, jwt_token.as_deref(), uri.clone())
+        let uri = uri.clone();
+        let client_clone = client.clone();
+        let jwt_token_clone = jwt_token.as_deref().map(|s| s.to_string());
+        async move { do_request_h2(&client_clone, cli, jwt_token_clone.as_deref(), uri).await }
     })
     .await;
 
@@ -574,7 +577,10 @@ async fn run_h3(cli: &Cli) -> Result<(), Error> {
     let uri = build_uri(cli);
 
     run_sliding_window(total_requests, concurrency, "H3 request failed", || {
-        do_request_h3(&send_request, cli, jwt_token.as_deref(), uri.clone())
+        let uri = uri.clone();
+        let send_request = send_request.clone();
+        let jwt_token_clone = jwt_token.as_deref().map(|s| s.to_string());
+        async move { do_request_h3(&send_request, cli, jwt_token_clone.as_deref(), uri).await }
     })
     .await;
 
@@ -690,9 +696,10 @@ fn prepare_request_builder(
         .uri(uri);
 
     if cli.security == Protocol::Jwt
-        && let Some(token) = jwt_token {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
-        }
+        && let Some(token) = jwt_token
+    {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
 
     builder
 }

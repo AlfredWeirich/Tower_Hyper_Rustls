@@ -46,7 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = identity_client.login(request).await?;
     println!("RESPONSE={:?}", response.into_inner());
 
-
     // 4. anaother gRPC call
     let request = tonic::Request::new(MetricsQuery {
         include_cpu: true,

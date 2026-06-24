@@ -123,11 +123,12 @@ where
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<usize>().ok())
-            && content_length > max_bytes {
-                let msg = "Payload too large (Header check)";
-                tracing::warn!("{}: {}", server_name, msg);
-                return Box::pin(async move { Ok(build_413_response(msg)) });
-            }
+            && content_length > max_bytes
+        {
+            let msg = "Payload too large (Header check)";
+            tracing::warn!("{}: {}", server_name, msg);
+            return Box::pin(async move { Ok(build_413_response(msg)) });
+        }
 
         // ── Stage 2: Wrap body in LimitedBody for streaming enforcement ──
         let (parts, body) = req.into_parts();
@@ -138,10 +139,10 @@ where
         };
 
         let req = Request::from_parts(parts, limited_body.boxed());
-        let mut inner = self.inner.clone();
+        let fut = self.inner.call(req);
 
         Box::pin(async move {
-            let result = inner.call(req).await;
+            let result = fut.await;
             tracing::info!("{}: End Max Payload: {}", server_name, max_bytes);
 
             match result {

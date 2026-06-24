@@ -43,10 +43,7 @@ impl DelayLayer {
     /// * `delay`       – The duration to sleep before readiness.
     /// * `server_name` – A `'static` label for tracing output.
     pub fn new(delay: Duration, server_name: &'static str) -> Self {
-        Self {
-            delay,
-            server_name,
-        }
+        Self { delay, server_name }
     }
 }
 

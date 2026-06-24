@@ -55,10 +55,10 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // === Standard Library ===
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::collections::HashMap;
 
 // === External Crates ===
 use anyhow::{Context, Error};
@@ -97,7 +97,6 @@ use hyper_util::server::conn::auto;
 use rustls::ServerConfig as RustlsServerConfig;
 use server::H3Body;
 use std::sync::Mutex;
-
 
 ///    Main entry point for the server application.
 ///
@@ -1080,11 +1079,11 @@ async fn handle_h3_connection(
     if let Some(identity) = connection.peer_identity()
         && let Some(certs) =
             identity.downcast_ref::<Vec<rustls_pki_types::CertificateDer<'static>>>()
-        {
-            for c in certs {
-                oids.extend(extract_oids_from_cert(c.as_ref()));
-            }
+    {
+        for c in certs {
+            oids.extend(extract_oids_from_cert(c.as_ref()));
         }
+    }
 
     // --- OPTIMIZATION START ---
     // Convert OIDs (Strings) to Roles (Enums) ONCE for the whole connection.
@@ -1145,9 +1144,10 @@ async fn handle_h3_connection(
                                 {
                                     while let Some(frame) = res_body.frame().await {
                                         if let Ok(data) = frame.unwrap().into_data()
-                                            && sender.send_data(data).await.is_err() {
-                                                break;
-                                            }
+                                            && sender.send_data(data).await.is_err()
+                                        {
+                                            break;
+                                        }
                                     }
                                     let _ = sender.finish().await;
                                 }

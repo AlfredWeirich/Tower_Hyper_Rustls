@@ -167,13 +167,13 @@ pub fn tls_config(
             })?;
 
         // Attach verifier and a dynamic cert resolver to the config builder
-        
+
         config_builder
             .with_client_cert_verifier(client_verifier)
             .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)))
     } else {
         // No client authentication; set up standard HTTPS only
-        
+
         config_builder
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(DynamicCertResolver::new(server_name)))

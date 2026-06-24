@@ -82,9 +82,7 @@ pub struct SrvCompressionLayer {
 impl SrvCompressionLayer {
     /// Create a new `SrvCompressionLayer` with a server name for logging.
     pub fn new(server_name: &'static str) -> Self {
-        Self {
-            server_name,
-        }
+        Self { server_name }
     }
 }
 

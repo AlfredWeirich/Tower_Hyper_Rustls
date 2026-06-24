@@ -354,17 +354,18 @@ impl RouterService {
         let mut max_forwards = 10;
         if let Some(mf_val) = original_headers.get(header::MAX_FORWARDS)
             && let Ok(mf_str) = mf_val.to_str()
-                && let Ok(mut mf) = mf_str.parse::<u8>() {
-                    if mf == 0 {
-                        warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
-                        return Err(build_error_response(
-                            "Loop Detected",
-                            StatusCode::LOOP_DETECTED,
-                        ));
-                    }
-                    mf -= 1;
-                    max_forwards = mf;
-                }
+            && let Ok(mut mf) = mf_str.parse::<u8>()
+        {
+            if mf == 0 {
+                warn!("{}: Max-Forwards reached 0, Loop Detected!", server_name);
+                return Err(build_error_response(
+                    "Loop Detected",
+                    StatusCode::LOOP_DETECTED,
+                ));
+            }
+            mf -= 1;
+            max_forwards = mf;
+        }
         original_headers.insert(
             header::MAX_FORWARDS,
             header::HeaderValue::from(max_forwards as u16),
@@ -619,9 +620,10 @@ impl Service<Request<SrvBody>> for RouterService {
 
                 // ── Stage 6: Forwarding ──────────────────────────────────
                 if let Some(auth) = target_uri.authority()
-                    && let Ok(host_val) = header::HeaderValue::from_str(auth.as_str()) {
-                        current_headers.insert(header::HOST, host_val);
-                    }
+                    && let Ok(host_val) = header::HeaderValue::from_str(auth.as_str())
+                {
+                    current_headers.insert(header::HOST, host_val);
+                }
 
                 if route_info.backend_type == RouteBackendType::Grpc {
                     // Try to lazy load the descriptor pool if we don't have it yet
@@ -988,12 +990,12 @@ pub async fn build_grpc_pool(
             if params.authentication == crate::configuration::AuthenticationMethod::ClientCert
                 && let (Some(cert_path), Some(key_path)) =
                     (&params.ssl_client_certificate, &params.ssl_client_key)
-                    && let (Ok(cert_pem), Ok(key_pem)) =
-                        (std::fs::read(cert_path), std::fs::read(key_path))
-                    {
-                        let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
-                        tls = tls.identity(identity);
-                    }
+                && let (Ok(cert_pem), Ok(key_pem)) =
+                    (std::fs::read(cert_path), std::fs::read(key_path))
+            {
+                let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
+                tls = tls.identity(identity);
+            }
         } else {
             let pem =
                 std::fs::read("./server_certs/self_signed/myca.pem").unwrap_or_else(|_| Vec::new());

@@ -144,38 +144,33 @@ where
     /// is explicitly dropped before calling the inner service, preventing
     /// lock contention during downstream processing.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let mut inner = self.inner.clone();
-        let state = self.state.clone();
-        let delay = self.limit_duration;
+        let allowed = {
+            let mut state = self.state.lock().unwrap();
+            let now = Instant::now();
+            let allowed = now < state.next_allowed;
+            if allowed {
+                // Update the next allowed instant
+                state.next_allowed = now + self.limit_duration;
+            }
+            allowed
+        };
+
         let server_name = self.server_name;
 
-        Box::pin(async move {
-            let allowed = {
-                let mut state = state.lock().unwrap();
-                let now = Instant::now();
-                let allowed = now < state.next_allowed;
-                if allowed {
-                    // Update the next allowed instant
-                    state.next_allowed = now + delay;
-                }
-                allowed
-            };
+        if allowed {
+            warn!("{}: Too Many Requests (simple limiter)", server_name);
+            let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
+                .map_err(SrvError::from)
+                .boxed();
 
-            if allowed {
-                warn!("{}: Too Many Requests (simple limiter)", server_name);
-                // #[cfg(feature = "boxed_body")]
-                let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
-                    .map_err(SrvError::from)
-                    .boxed();
+            let mut response = Response::new(body);
+            *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+            return Box::pin(async move { Ok(response) });
+        }
 
-                let mut response = Response::new(body);
-                *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-                return Ok(response);
-            }
-
-            trace!("{}: Allowed request", server_name);
-            inner.call(req).await
-        })
+        trace!("{}: Allowed request", server_name);
+        let fut = self.inner.call(req);
+        Box::pin(async move { fut.await })
     }
 }
 
@@ -359,40 +354,34 @@ where
     /// * **Token available** → drops the lock and forwards the request.
     /// * **Bucket empty** → returns 429 immediately.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let mut inner = self.inner.clone();
-        let state = self.state.clone();
-        let capacity = self.capacity;
-        let refill_tokens = self.refill_tokens;
-        let interval = self.interval;
+        let (try_consume, current_tokens) = {
+            let mut bucket = self.state.lock().unwrap();
+            bucket.refill(self.capacity, self.refill_tokens, self.interval);
+            let consumed = bucket.try_consume();
+            (consumed, bucket.tokens)
+        };
+
         let server_name = self.server_name;
 
-        Box::pin(async move {
-            let (try_consume, current_tokens) = {
-                let mut bucket = state.lock().unwrap();
-                bucket.refill(capacity, refill_tokens, interval);
-                let consumed = bucket.try_consume();
-                (consumed, bucket.tokens)
-            };
+        if try_consume {
+            info!(
+                "{}: Token consumed (bucket limiter). Remaining: {}",
+                server_name, current_tokens
+            );
+            let fut = self.inner.call(req);
+            Box::pin(async move { fut.await })
+        } else {
+            warn!(
+                "{}: Too Many Requests – no tokens available (bucket limiter).",
+                server_name
+            );
+            let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
+                .map_err(SrvError::from)
+                .boxed();
 
-            if try_consume {
-                info!(
-                    "{}: Token consumed (bucket limiter). Remaining: {}",
-                    server_name, current_tokens
-                );
-                inner.call(req).await
-            } else {
-                warn!(
-                    "{}: Too Many Requests – no tokens available (bucket limiter).",
-                    server_name
-                );
-                let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
-                    .map_err(SrvError::from)
-                    .boxed();
-
-                let mut response = Response::new(body);
-                *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-                Ok(response)
-            }
-        })
+            let mut response = Response::new(body);
+            *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+            Box::pin(async move { Ok(response) })
+        }
     }
 }

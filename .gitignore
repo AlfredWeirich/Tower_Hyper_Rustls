@@ -45,3 +45,5 @@ $RECYCLE.BIN/
 
 # Optional: ignore Cargo.lock in libraries (not binaries)
 /Cargo.lock
+
+.tokensave/*

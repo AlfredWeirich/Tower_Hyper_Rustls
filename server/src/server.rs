@@ -1145,12 +1145,21 @@ async fn handle_h3_connection(
                                     while let Some(frame_res) = res_body.frame().await {
                                         match frame_res {
                                             Ok(frame) => {
-                                                if let Ok(data) = frame.into_data() {
-                                                    if sender.send_data(data).await.is_err() {
+                                                let frame = match frame.into_data() {
+                                                    Ok(data) => {
+                                                        if sender.send_data(data).await.is_err() {
+                                                            break;
+                                                        }
+                                                        continue;
+                                                    }
+                                                    Err(f) => f,
+                                                };
+
+                                                if let Ok(trailers) = frame.into_trailers() {
+                                                    if sender.send_trailers(trailers).await.is_err() {
                                                         break;
                                                     }
                                                 }
-                                                // Note: HTTP/3 Trailers are currently not forwarded here.
                                             }
                                             Err(e) => {
                                                 tracing::error!("H3 Response body stream error: {:?}", e);

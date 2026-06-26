@@ -227,13 +227,16 @@ pub struct RouteConfig {
 
 /// The type of backend service being routed to.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum RouteBackendType {
     /// Standard HTTP/REST backend (default).
     #[default]
     Rest,
+    /// Native gRPC transparent proxying. HTTP/2 is forced to the backend.
+    GrpcPassthrough,
     /// gRPC backend with automatic JSON-to-Protobuf transcoding.
-    Grpc,
+    #[serde(alias = "grpc")]
+    GrpcTranscoding,
 }
 
 /// A load balancing strategy for downstream forwarding.

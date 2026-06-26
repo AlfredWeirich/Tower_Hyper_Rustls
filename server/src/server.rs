@@ -496,7 +496,8 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
         for route in &server_config.parsed_routes {
             // The interval (in seconds) between health checks. 0 means disabled.
             let interval = route.target.active_health_check_interval;
-            let is_grpc = route.backend_type == server::configuration::RouteBackendType::Grpc;
+            let is_grpc = route.backend_type == server::configuration::RouteBackendType::GrpcTranscoding 
+                || route.backend_type == server::configuration::RouteBackendType::GrpcPassthrough;
 
             // If interval > 0, the user wants the proxy to automatically ping the servers in the background
             // to evict them from the load-balancer if they die, and re-add them when they recover.

@@ -553,8 +553,12 @@ impl Service<Request<SrvBody>> for RouterService {
             // For gRPC transcoding, we MUST buffer the body to parse JSON,
             // but for standard REST proxying we can stream it directly if there are no retries,
             // OR buffer it if retries are enabled and the body isn't huge.
-            let is_grpc = route_info.backend_type == RouteBackendType::Grpc;
-            let can_stream = max_retries == 0 && !is_grpc;
+            let is_transcoding = route_info.backend_type == RouteBackendType::GrpcTranscoding;
+            let is_passthrough = route_info.backend_type == RouteBackendType::GrpcPassthrough;
+
+            // For GrpcPassthrough, we MUST stream, regardless of retries.
+            // For GrpcTranscoding, we MUST NOT stream.
+            let can_stream = (max_retries == 0 || is_passthrough) && !is_transcoding;
 
             let mut request_body = if can_stream {
                 RequestBody::Stream(body)
@@ -625,7 +629,7 @@ impl Service<Request<SrvBody>> for RouterService {
                     current_headers.insert(header::HOST, host_val);
                 }
 
-                if route_info.backend_type == RouteBackendType::Grpc {
+                if route_info.backend_type == RouteBackendType::GrpcTranscoding {
                     // Try to lazy load the descriptor pool if we don't have it yet
                     let mut pool_guard = route_info.target.grpc_pool.write().await;
                     if pool_guard.is_none() {
@@ -886,7 +890,13 @@ impl Service<Request<SrvBody>> for RouterService {
                     *proxy_req.version_mut() = original_version;
                     *proxy_req.headers_mut() = current_headers;
 
-                    match client.request(proxy_req).await {
+                    let proxy_client = if route_info.backend_type == RouteBackendType::GrpcPassthrough {
+                        &grpc_client
+                    } else {
+                        &client
+                    };
+
+                    match proxy_client.request(proxy_req).await {
                         Ok(res) => {
                             let (res_parts, res_body) = res.into_parts();
                             return Ok(Response::from_parts(

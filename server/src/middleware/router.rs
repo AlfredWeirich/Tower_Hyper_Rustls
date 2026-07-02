@@ -349,6 +349,8 @@ impl RouterService {
         original_headers: &mut hyper::HeaderMap,
         server_name: &str,
         jwt_token: Option<&hyper::header::HeaderValue>,
+        extensions: &hyper::http::Extensions,
+        config: &crate::configuration::ServerConfig,
     ) -> Result<(), Response<ServiceRespBody>> {
         // ── Cascading Router Protection ──────────────────────────
         let mut max_forwards = 10;
@@ -378,6 +380,42 @@ impl RouterService {
 
         if let Some(hv) = jwt_token {
             original_headers.insert(header::AUTHORIZATION, hv.clone());
+        }
+
+        if let Some(forward_config) = &config.client_cert_forwarding {
+            tracing::warn!("Client cert forwarding is ENABLED in config!");
+            if let Some(header_cert) = &forward_config.header_cert {
+                if let Some(pem) = extensions.get::<crate::PemCertExtension>() {
+                    if let Ok(hdr_val) = header::HeaderValue::from_str(&pem.0) {
+                        if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
+                            tracing::warn!("Injecting PEM into header: {}", hdr_name);
+                            original_headers.insert(hdr_name, hdr_val);
+                        }
+                    }
+                }
+            }
+            if let Some(header_san) = &forward_config.header_san {
+                tracing::warn!("Config expects SAN header name: '{}'", header_san);
+                if let Some(san) = extensions.get::<crate::SanCertExtension>() {
+                    tracing::warn!("Found SanCertExtension with value: '{}'", san.0);
+                    match header::HeaderValue::from_str(&san.0) {
+                        Ok(hdr_val) => {
+                            match header::HeaderName::from_bytes(header_san.as_bytes()) {
+                                Ok(hdr_name) => {
+                                    tracing::warn!("SUCCESS! Injecting SAN into header: {}", hdr_name);
+                                    original_headers.insert(hdr_name, hdr_val);
+                                },
+                                Err(e) => tracing::warn!("FAILED to parse HeaderName from config '{}': {}", header_san, e),
+                            }
+                        },
+                        Err(e) => tracing::warn!("FAILED to parse HeaderValue from SAN '{}': {}", san.0, e),
+                    }
+                } else {
+                    tracing::warn!("extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions.");
+                }
+            }
+        } else {
+            tracing::warn!("Client cert forwarding is NOT enabled in config!");
         }
 
         Ok(())
@@ -530,7 +568,7 @@ impl Service<Request<SrvBody>> for RouterService {
             let mut prepared_headers = parts.headers; // Take ownership, O(1) move!
 
             if let Err(err_resp) =
-                Self::prepare_proxy_headers(&mut prepared_headers, server_name, jwt_token.as_ref())
+                Self::prepare_proxy_headers(&mut prepared_headers, server_name, jwt_token.as_ref(), &parts.extensions, &self_clone.config)
             {
                 return Ok(err_resp);
             }
@@ -887,7 +925,19 @@ impl Service<Request<SrvBody>> for RouterService {
                     let mut proxy_req = Request::new(boxed_body);
                     *proxy_req.method_mut() = original_method.clone();
                     *proxy_req.uri_mut() = target_uri;
-                    *proxy_req.version_mut() = original_version;
+
+                    if route_info.backend_type == RouteBackendType::GrpcPassthrough {
+                        *proxy_req.version_mut() = hyper::Version::HTTP_2;
+                        // Strip hop-by-hop headers that hyper's HTTP/2 client strictly rejects
+                        current_headers.remove(hyper::header::CONNECTION);
+                        current_headers.remove(hyper::header::TRANSFER_ENCODING);
+                        current_headers.remove(hyper::header::UPGRADE);
+                        current_headers.remove(hyper::header::TE); // TE is allowed in HTTP/2 only if it is "trailers"
+                        current_headers.insert(hyper::header::TE, hyper::header::HeaderValue::from_static("trailers"));
+                    } else {
+                        *proxy_req.version_mut() = original_version;
+                    }
+
                     *proxy_req.headers_mut() = current_headers;
 
                     let proxy_client = if route_info.backend_type == RouteBackendType::GrpcPassthrough {

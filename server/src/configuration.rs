@@ -167,6 +167,9 @@ pub struct ServerConfig {
     /// Client CA certificates for mTLS verification.
     pub client_certs: Option<Vec<ClientCertConfig>>,
 
+    /// Configuration for forwarding client certificate details to the backend.
+    pub client_cert_forwarding: Option<ClientCertForwardingConfig>,
+
     /// Middleware layer configuration (names + per-layer settings).
     #[serde(rename = "Layers")]
     pub layers: Layers,
@@ -544,6 +547,15 @@ pub struct ClientCertConfig {
     pub ssl_client_ca: String,
     /// Optional path to a PEM-encoded Certificate Revocation List.
     pub ssl_client_crl: Option<String>,
+}
+
+/// Configuration for client certificate forwarding.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClientCertForwardingConfig {
+    /// The HTTP header name used to forward the full URL-encoded client certificate.
+    pub header_cert: Option<String>,
+    /// The HTTP header name used to forward the client certificate's SAN (Subject Alternative Name).
+    pub header_san: Option<String>,
 }
 
 /// Configuration for the simple fixed-window rate limiter.

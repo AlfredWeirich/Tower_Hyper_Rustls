@@ -197,6 +197,12 @@ use std::sync::Arc;
 /// `ConnectionHandler` is cheaply cloneable: the inner service uses
 /// [`BoxCloneService`] (internally `Arc`-based) and the role list is
 /// wrapped in an [`Arc`].
+#[derive(Clone, Debug)]
+pub struct PemCertExtension(pub String);
+
+#[derive(Clone, Debug)]
+pub struct SanCertExtension(pub String);
+
 pub struct ConnectionHandler {
     /// The fully assembled middleware + routing pipeline, type-erased and
     /// cloneable so it can be shared across all requests on this connection.
@@ -212,6 +218,12 @@ pub struct ConnectionHandler {
     /// the same connection is a cheap pointer bump instead of a `Vec` copy.
     /// Defaults to `[UserRole::Guest]` when no recognized OID is found.
     client_roles: Arc<Vec<UserRole>>,
+
+    /// The client's full certificate in PEM format, URL-encoded.
+    client_cert_pem: Option<String>,
+
+    /// The client's Subject Alternative Name (SAN).
+    client_cert_san: Option<String>,
 }
 
 impl ConnectionHandler {
@@ -236,7 +248,13 @@ impl ConnectionHandler {
     /// 1. Map every OID to a [`UserRole`] using [`Config::map_oid_to_role`].
     /// 2. Filter out [`UserRole::Guest`] (the default/fallback role).
     /// 3. If no meaningful roles remain, fall back to `[UserRole::Guest]`.
-    pub fn new(service: BoxedCloneService, addr: SocketAddr, oids: Vec<String>) -> Self {
+    pub fn new(
+        service: BoxedCloneService, 
+        addr: SocketAddr, 
+        oids: Vec<String>,
+        client_cert_pem: Option<String>,
+        client_cert_san: Option<String>,
+    ) -> Self {
         // 1. Perform the expensive mapping ONCE per connection
         let config = crate::configuration::Config::global();
         let roles: Vec<UserRole> = oids
@@ -256,6 +274,8 @@ impl ConnectionHandler {
             inner_service: service,
             client_addr: addr,
             client_roles: Arc::new(final_roles),
+            client_cert_pem,
+            client_cert_san,
         }
     }
 
@@ -275,11 +295,15 @@ impl ConnectionHandler {
         service: BoxedCloneService,
         addr: SocketAddr,
         roles: Arc<Vec<UserRole>>, // Pass roles, not OIDs
+        client_cert_pem: Option<String>,
+        client_cert_san: Option<String>,
     ) -> Self {
         Self {
             inner_service: service,
             client_addr: addr,
             client_roles: roles,
+            client_cert_pem,
+            client_cert_san,
         }
     }
 
@@ -321,6 +345,14 @@ impl ConnectionHandler {
 
         // 2. Zero-cost injection. Just cloning the Arc pointer.
         req.extensions_mut().insert(self.client_roles.clone());
+
+        // 3. Inject cert information if present
+        if let Some(pem) = self.client_cert_pem.clone() {
+            req.extensions_mut().insert(PemCertExtension(pem));
+        }
+        if let Some(san) = self.client_cert_san.clone() {
+            req.extensions_mut().insert(SanCertExtension(san));
+        }
 
         // Tower service contract: poll_ready() MUST be called before call().
         // This is critical for layers like ConcurrencyLimit that acquire a
@@ -387,6 +419,8 @@ impl Clone for ConnectionHandler {
             inner_service: self.inner_service.clone(),
             client_addr: self.client_addr,
             client_roles: self.client_roles.clone(),
+            client_cert_pem: self.client_cert_pem.clone(),
+            client_cert_san: self.client_cert_san.clone(),
         }
     }
 }

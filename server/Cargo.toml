@@ -37,6 +37,7 @@ tokio-util = { version = "0.7", features = ["io", "codec"] }
 toml = "0.8.23"
 tower = { version = "0.4.13", features = ["util", "make", "limit"] }
 tracing = "0.1.41"
+urlencoding = "2.1"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 x509-parser = "0.18.0"

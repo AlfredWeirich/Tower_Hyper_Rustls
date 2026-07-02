@@ -276,3 +276,42 @@ pub fn extract_oids_from_cert(cert_der: &[u8]) -> Vec<String> {
     }
     oids
 }
+
+/// Extracts the full PEM-encoded certificate and its SAN (Subject Alternative Name)
+/// from a DER-encoded X.509 certificate.
+pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<String>) {
+    // 1. Encode DER to PEM
+    let pem = ::pem::encode(&::pem::Pem::new("CERTIFICATE", cert_der));
+    let encoded_pem = urlencoding::encode(&pem).into_owned();
+
+    // 2. Extract SAN
+    let mut san_dns = None;
+    match X509Certificate::from_der(cert_der) {
+        Ok((_, x509)) => {
+            tracing::warn!("Successfully parsed X509 cert. Looking for SAN extension...");
+            let mut found_san_ext = false;
+            for ext in x509.extensions() {
+                if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+                    found_san_ext = true;
+                    tracing::warn!("Found SubjectAlternativeName extension. Iterating GeneralNames...");
+                    for name in &san.general_names {
+                        tracing::warn!("Found GeneralName: {:?}", name);
+                        if let x509_parser::extensions::GeneralName::DNSName(domain) = name {
+                            san_dns = Some(domain.to_string());
+                            tracing::warn!("Extracted DNSName SAN: {}", domain);
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found_san_ext {
+                tracing::warn!("No SubjectAlternativeName extension found in client cert!");
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Failed to parse client cert DER: {:?}", e);
+        }
+    }
+
+    (Some(encoded_pem), san_dns)
+}

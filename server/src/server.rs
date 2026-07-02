@@ -87,7 +87,7 @@ use server::{
         alt_svc::AltSvcLayer,
         compression::{SrvCompressionLayer, SrvDecompressionLayer},
     },
-    tls_conf::{extract_oids_from_cert, tls_config},
+    tls_conf::{extract_oids_from_cert, extract_cert_san_and_pem, tls_config},
 };
 
 use http_body_util::BodyExt;
@@ -389,7 +389,7 @@ async fn start_single_server(
                             let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack per connection
                             let conn_token = cancel_token.clone();
                             tokio::spawn(async move {
-                                let handler = ConnectionHandler::new(svc, peer_addr, Vec::new());
+                                let handler = ConnectionHandler::new(svc, peer_addr, Vec::new(), None, None);
                                 let mut builder = auto::Builder::new(TokioExecutor::new());
                                 // Timeout: drop clients that take too long to send HTTP/1 headers
                                 builder.http1()
@@ -941,14 +941,21 @@ async fn run_tcp_listener(
                                     let (_, session) = tls_stream.get_ref();
                                     let certs = session.peer_certificates();
 
-                                    let client_oids = certs
-                                        .and_then(|c| c.first())
-                                        .map(|cert| extract_oids_from_cert(cert.as_ref()))
-                                        .unwrap_or_default();
+                                    let mut client_cert_pem = None;
+                                    let mut client_cert_san = None;
+                                    
+                                    let client_oids = if let Some(c) = certs.and_then(|c| c.first()) {
+                                        let (pem, san) = extract_cert_san_and_pem(c.as_ref());
+                                        client_cert_pem = pem;
+                                        client_cert_san = san;
+                                        extract_oids_from_cert(c.as_ref())
+                                    } else {
+                                        Vec::new()
+                                    };
 
                                     let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack
                                     // Use the standard constructor which wraps Vec in Arc
-                                    let handler = ConnectionHandler::new(svc, peer_addr, client_oids);
+                                    let handler = ConnectionHandler::new(svc, peer_addr, client_oids, client_cert_pem, client_cert_san);
 
                                     let mut builder = auto::Builder::new(TokioExecutor::new());
                                     // Timeout: drop clients that take too long to send HTTP/1 headers
@@ -1077,10 +1084,17 @@ async fn handle_h3_connection(
 
     // 2. Extract OIDs (Strings)
     let mut oids = Vec::new();
+    let mut client_cert_pem = None;
+    let mut client_cert_san = None;
     if let Some(identity) = connection.peer_identity()
         && let Some(certs) =
             identity.downcast_ref::<Vec<rustls_pki_types::CertificateDer<'static>>>()
     {
+        if let Some(first_cert) = certs.first() {
+            let (pem, san) = extract_cert_san_and_pem(first_cert.as_ref());
+            client_cert_pem = pem;
+            client_cert_san = san;
+        }
         for c in certs {
             oids.extend(extract_oids_from_cert(c.as_ref()));
         }
@@ -1121,6 +1135,9 @@ async fn handle_h3_connection(
                 let svc = base_svc.clone();
                 // Cheap clone of the already calculated roles
                 let roles_for_req = shared_roles.clone();
+                
+                let req_cert_pem = client_cert_pem.clone();
+                let req_cert_san = client_cert_san.clone();
 
                 tokio::spawn(async move {
                     match resolver.resolve_request().await {
@@ -1129,7 +1146,7 @@ async fn handle_h3_connection(
 
                             // Pass the ROLES to new_shared
                             let handler =
-                                ConnectionHandler::new_shared(svc, peer_addr, roles_for_req);
+                                ConnectionHandler::new_shared(svc, peer_addr, roles_for_req, req_cert_pem, req_cert_san);
 
                             let (parts, _) = req.into_parts();
                             let body = H3Body::new(receiver);

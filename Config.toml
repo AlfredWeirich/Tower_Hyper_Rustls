@@ -41,7 +41,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     
     # The network interface IP to bind to. 
     # Use "0.0.0.0" to listen on all interfaces, or a specific local IP.
-    ip = "192.168.178.175"
+    ip = "192.168.178.23"
     
     # The TCP port the server will listen on.
     port = 1336
@@ -57,12 +57,12 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # "None"       - No auth (Public)
     # "ClientCert" - Mutual TLS (mTLS). Requires [[Server.client_certs]]
     # "JWT"        - JSON Web Token. Requires [Server.Layers.JWT]
-    authentication = "None"
+    authentication = "ClientCert"
 
     # The service type that handles the request after passing through layers:
     # "Echo"   - Returns the request data as-is (Debug/Health checks)
     # "Router" - Forwards requests to upstreams defined in [Server.ReverseRoutes]
-    service = "Echo"
+    service = "Router"
 
     # --- Middleware Layers ---
     # Defines the execution pipeline. Layers are executed in the order listed.
@@ -79,17 +79,22 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # --- TLS: Server Identity (For HTTPS) ---
     [Server.server_certs]
     # Path to the public certificate (or full chain) in PEM format.
-    ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+    ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
     # Path to the unencrypted private key file in PEM format.
-    ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+    ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
 
     # --- TLS: Client Verification (For mTLS) ---
     # This is an array of tables. You can trust multiple Certificate Authorities.
     [[Server.client_certs]]
     # Path to the CA certificate used to verify client certificates.
-    ssl_client_ca = "./client_certs/ca.cert.pem"
+    ssl_client_ca = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
     # Optional: Path to a Certificate Revocation List (CRL).
     # ssl_client_crl = "./client_certs/ca.crl.pem"
+
+    # --- Client Certificate Forwarding ---
+    [Server.client_cert_forwarding]
+    header_cert = "x-client-cert"
+    header_san = "x-client-san"
 
     # --- JWT Configuration ---
     # Required only if authentication = "JWT" or "JwtAuth" is in layers.
@@ -116,8 +121,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
 
     [Server.AllowedPathes.POST]
     "/address" = ["^/address\\??city=[a-zA-Z]+$"]
-    "/api" = ["^/api/grpc/.*$"]
-    "/grpc" = ["^/grpc/.*$"]
+    "/chat." = ["^/chat\\..*$"]
 
     [Server.AllowedPathes.PUT]
     "/" = ["^/?$", "^/\\?id=\\d+$"]
@@ -127,31 +131,29 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # --- Reverse Proxy Routing ---
     # Only active if service = "Router".
 
-    [Server.ReverseRoutes]
-    # Syntax: "/prefix" = { upstreams = ["host:port"], strategy = "RoundRobin", allowed_roles = ["Role1", "Role2"] }
-    # "RoundRobin" (Default if omitted): Iterates through the upstreams one by one in order using a fast, thread-safe atomic counter.
-    # "LeastConnections": Tracks the number of active, in-flight requests for every upstream and always routes new traffic to the server currently handling the fewest connections.
-    # "Random": Uses a fast pseudo-random number generator to spray traffic randomly across all available upstreams.
-    # "Sticky": Hashes the incoming client's IP address (SocketAddr) to predictably route the exact same clients to the exact same backend servers every time (Session Affinity).
+    # Syntax: [Server.ReverseRoutes."/prefix"] 
     # Longest prefix matches first (e.g., "/help" is checked before "/").
-    "/name"   = { upstreams = ["192.168.178.175:1337/name","192.168.178.175:1338/name"], strategy = "RoundRobin", allowed_roles = ["Admin"], cooldown_seconds = 5, max_retries = 3, active_health_check_interval = 15 }
-    "/"       = { upstreams = ["192.168.178.175:1338", "192.168.178.175:1339"], strategy = "LeastConnections", allowed_roles = ["Admin", "Operator"] }
-    "/help"   = { upstreams = ["192.168.178.175:1340/help","192.168.178.175:1341/help"], strategy = "RoundRobin", allowed_roles = ["Admin"] }
-    "/api/grpc"   = { upstreams = ["https://192.168.178.175:50051"], backend_type = "grpc", active_health_check_interval = 15 }
+    #
+    # strategy:
+    #   "RoundRobin" (Default): Iterates through the upstreams one by one in order using a fast, thread-safe atomic counter.
+    #   "LeastConnections": Tracks the number of active, in-flight requests for every upstream and always routes new traffic to the server currently handling the fewest connections.
+    #   "Random": Uses a fast pseudo-random number generator to spray traffic randomly across all available upstreams.
+    #   "Sticky": Hashes the incoming client's IP address (SocketAddr) to predictably route the exact same clients to the exact same backend servers every time (Session Affinity).
+
+    [Server.ReverseRoutes."/"]
+    upstreams = ["https://www.aweirich.eu:50051"]
+    active_health_check_interval = 15
+    backend_type = "grpc_passthrough"
 
     # --- Upstream Connection Parameters ---
     [Server.RouterParams]
-    # Protocol the gateway uses to talk to the backend (upstream).
     protocol = "https"
-    # Auth method the gateway uses to authenticate against the backend.
     authentication = "ClientCert"
-    # CA used by the gateway to verify the backend's identity.
-    ssl_root_certificate = "./server_certs/self_signed/myca.pem"
-    # Client certificate/key if the backend requires mTLS from the gateway.
-    ssl_client_certificate = "./client_certs/client.cert.pem"
-    ssl_client_key = "./client_certs/client.key.pem"
-    # Optional: path to a JWT file if the backend requires JWT auth.
-    # jwt = "./jwt/token.jwt"
+    # The proxy will use this cert to authenticate against the backend's mTLS requirement.
+    ssl_client_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
+    ssl_client_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
+    # The proxy will use this CA to verify the backend's identity.
+    ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
     # #########################################################################
 
 
@@ -174,117 +176,126 @@ pki_base_oid = "1.3.6.1.4.1.65111"
    
 
 
+#[[Server]]
 [[Server]]
 # =============================================================================
-# Second Server
+# Onboarding Server (Public - no mTLS)
 # =============================================================================
-            name = "scnd_server"
-            ip = "192.168.178.175"
+            name = "onboarding_server"
+            ip = "192.168.178.23"
             port = 1337
             protocol = "https"
-            service = "Echo"
+            service = "Router"
             enabled = true
             authentication = "None"
 
-            # [[Server.client_certs]]
-            # ssl_client_ca = "./client_certs/ca.cert.pem"
-
             [Server.server_certs]
-            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+            ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
+            ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
 
             [Server.Layers]
-            # Keeping layers empty for maximum throughput on the backend.
             enabled = ["Logger"]
 
-[[Server]]
+            [Server.AllowedPathes.POST]
+            "/chat.OnboardingService" = ["^/chat\\.OnboardingService/.*$"]
+
+            [Server.ReverseRoutes."/"]
+            upstreams = ["https://www.aweirich.eu:50052"]
+            backend_type = "grpc_passthrough"
+
+            [Server.RouterParams]
+            protocol = "https"
+            authentication = "None"
+            ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
+
+#[[Server]]
 # =============================================================================
 # Third Server
 # =============================================================================
-            name = "third_server"
-            ip = "192.168.178.175"
-            port = 1338
-            protocol = "https"
-            service = "Echo"
-            enabled = true
-            authentication = "None"
+            #name = "third_server"
+            #ip = "192.168.178.23"
+            #port = 1338
+            #protocol = "https"
+            #service = "Echo"
+            #enabled = true
+            #authentication = "None"
 
-            # [[Server.client_certs]]
-            # ssl_client_ca = "./client_certs/ca.cert.pem"
+            ## [[Server.client_certs]]
+            ## ssl_client_ca = "./client_certs/ca.cert.pem"
 
-            [Server.server_certs]
-            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+            #[Server.server_certs]
+            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
-            [Server.Layers]
+            #[Server.Layers]
             # Keeping layers empty for maximum throughput on the backend.
-            enabled = ["Logger"]
+            #enabled = ["Logger"]
 
-[[Server]]
+#[[Server]]
 # =============================================================================
 # fourth Server
 # =============================================================================
-            name = "fourth_server"
-            ip = "192.168.178.175"
-            port = 1339
-            protocol = "https"
-            service = "Echo"
-            enabled = true
-            authentication = "None"
+            #name = "fourth_server"
+            #ip = "192.168.178.23"
+            #port = 1339
+            #protocol = "https"
+            #service = "Echo"
+            #enabled = true
+            #authentication = "None"
 
             # [[Server.client_certs]]
             # ssl_client_ca = "./client_certs/ca.cert.pem"
 
-            [Server.server_certs]
-            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+            #[Server.server_certs]
+            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
-            [Server.Layers]
+            #[Server.Layers]
             # Keeping layers empty for maximum throughput on the backend.
-            enabled = ["Logger"]
+            # enabled = ["Logger"]
 
-[[Server]]
+#[[Server]]
 # =============================================================================
 # fifth Server
 # =============================================================================
-            name = "fifth_server"
-            ip = "192.168.178.175"
-            port = 1340
-            protocol = "https"
-            service = "Echo"
-            enabled = true
-            authentication = "None"
+            #name = "fifth_server"
+            #ip = "192.168.178.23"
+            #port = 1340
+            #protocol = "https"
+            #service = "Echo"
+            #enabled = true
+            #authentication = "None"
 
             # [[Server.client_certs]]
             # ssl_client_ca = "./client_certs/ca.cert.pem"
 
-            [Server.server_certs]
-            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+            #[Server.server_certs]
+            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
-            [Server.Layers]
+            #[Server.Layers]
             # Keeping layers empty for maximum throughput on the backend.
-            enabled = ["Logger"]
+            # enabled = ["Logger"]
 
-[[Server]]
+#[[Server]]
 # =============================================================================
 # sixth Server
 # =============================================================================
-            name = "sixth_server"
-            ip = "192.168.178.175"
-            port = 1341
-            protocol = "https"
-            service = "Echo"
-            enabled = true
-            authentication = "None"
+            #name = "sixth_server"
+            #ip = "192.168.178.23"
+            #port = 1341
+            #protocol = "https"
+            #service = "Echo"
+            #enabled = true
+            #authentication = "None"
 
             # [[Server.client_certs]]
             # ssl_client_ca = "./client_certs/ca.cert.pem"
 
-            [Server.server_certs]
-            ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
+            #[Server.server_certs]
+            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
+            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
 
-            [Server.Layers]
+            #[Server.Layers]
             # Keeping layers empty for maximum throughput on the backend.
-            enabled = ["Logger"]
+            # enabled = ["Logger"]

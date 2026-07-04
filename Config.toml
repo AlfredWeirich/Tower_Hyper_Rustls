@@ -69,8 +69,9 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     [Server.Layers]
     # Options: "Timing", "Counter", "Logger", "Inspection", "JwtAuth", 
     #          "ConcurrencyLimit", "RateLimiter:Simple", "RateLimiter:TokenBucket"
-    # enabled = ["Decompression","MaxPayload", "Logger",  "Inspection",  "Compression", "AltSvc"] 
-    enabled = ["Logger"] 
+    # Option 2 (Maximum Throughput - no limits):
+    # enabled = ["Logger"] 
+    enabled = ["Decompression", "MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
 
     # --- Decompression Bomb Protection ---
     [Server.Layers.Decompression]
@@ -108,23 +109,38 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     max_concurrent_requests = 64
 
     [Server.Layers.MaxPayload]
-    max_bytes = 1000 #  10485760  # 10 MB Limit
+    max_bytes = 10485760 # 10 MB Limit
 
     # #########################################################################
     # --- Inspection Layer (Whitelist Regex) ---
     # Only requests matching these regex patterns will be passed to the service.
     # Format: "PathPrefix" = ["Regex1", "Regex2"]
-    [Server.AllowedPathes.GET]
-    "/"     = ["^/?$", "^/\\?name=.*$"] # Allows root and root with name query
-    "/help" = ["^/help$"]
-    "/name" = ["^/name\\??id=\\d+$"]      # Allows /name only with numeric ID
+    #[Server.AllowedPathes.GET]
+    #"/"     = ["^/?$", "^/\\?name=.*$"] # Allows root and root with name query
+    #"/help" = ["^/help$"]
+    #"/name" = ["^/name\\??id=\\d+$"]      # Allows /name only with numeric ID
 
     [Server.AllowedPathes.POST]
-    "/address" = ["^/address\\??city=[a-zA-Z]+$"]
-    "/chat." = ["^/chat\\..*$"]
+    "/chat.ChatService/GetConversations" = [".*"]
+    "/chat.ChatService/GetMessages" = [".*"]
+    "/chat.ChatService/SendMessage" = [".*"]
+    "/chat.ChatService/StreamMessages" = [".*"]
+    "/chat.ChatService/RegisterKeyPackage" = [".*"]
+    "/chat.ChatService/ClientLog" = [".*"]
+    "/chat.ChatService/GetDevices" = [".*"]
+    "/chat.ChatService/BlockDevice" = [".*"]
+    "/chat.ChatService/AddMember" = [".*"]
+    "/chat.ChatService/RemoveMember" = [".*"]
+    "/chat.ChatService/GetConversationMembers" = [".*"]
+    "/chat.ChatService/CreateConversation" = [".*"]
+    "/chat.ChatService/SearchUsers" = [".*"]
+    "/chat.ChatService/DeleteConversation" = [".*"]
+    "/chat.ChatService/MarkAsRead" = [".*"]
+    "/chat.ChatService/StreamGlobalEvents" = [".*"]
+    "/chat.ChatService/RegisterPushToken" = [".*"]
 
-    [Server.AllowedPathes.PUT]
-    "/" = ["^/?$", "^/\\?id=\\d+$"]
+    #[Server.AllowedPathes.PUT]
+    #"/" = ["^/?$", "^/\\?id=\\d+$"]
     # #########################################################################
 
     # #########################################################################
@@ -192,10 +208,22 @@ pki_base_oid = "1.3.6.1.4.1.65111"
             ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
 
             [Server.Layers]
-            enabled = ["Logger"]
+            enabled = ["MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+
+            [Server.Layers.ConcurrencyLimit]
+            max_concurrent_requests = 128
+
+            [Server.Layers.MaxPayload]
+            max_bytes = 2000000 # 2 MB Limit (CSR requests are small)
+
+            [Server.Layers.TokenBucketRateLimiter]
+            max_capacity = 15     # Maximum burst size (tokens)
+            refill = 5           # Number of tokens added per interval
+            duration_micros = 1000000 # Refill interval in microseconds (1 second)
 
             [Server.AllowedPathes.POST]
-            "/chat.OnboardingService" = ["^/chat\\.OnboardingService/.*$"]
+            "/chat.OnboardingService/RequestOnboarding" = [".*"]
+            "/chat.OnboardingService/SubmitOnboarding" = [".*"]
 
             [Server.ReverseRoutes."/"]
             upstreams = ["https://www.aweirich.eu:50052"]

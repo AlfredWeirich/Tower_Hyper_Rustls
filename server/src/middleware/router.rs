@@ -383,8 +383,17 @@ impl RouterService {
         }
 
         if let Some(forward_config) = &config.client_cert_forwarding {
-            // SECURITY (V2): Unconditionally remove the target headers from the incoming request.
-            // This prevents attackers from spoofing identity headers on unauthenticated ports (e.g. Onboarding).
+            // =========================================================================
+            // 🛡️ SECURITY (V2): Header Sanitizing (Identity Spoofing Prevention)
+            // =========================================================================
+            // Bevor der Proxy eigene, vertrauenswürdige Header injiziert (oder den Request 
+            // ohne mTLS weiterleitet, z.B. am Onboarding-Port), MÜSSEN alle vom Client 
+            // eventuell bösartig mitgesendeten Identitäts-Header restlos entfernt werden.
+            // Ohne dieses aktive "Sanitizing" könnte ein Hacker am Onboarding-Port manuell
+            // `x-client-san: <fremde_uuid>` mitsenden. Da der Port kein mTLS erfordert,
+            // würde der Proxy den Header nicht überschreiben und ihn direkt ans Backend 
+            // durchreichen, wodurch der Hacker fremde Accounts übernehmen könnte (Auth-Bypass).
+            // =========================================================================
             if let Some(header_cert) = &forward_config.header_cert {
                 if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
                     original_headers.remove(&hdr_name);

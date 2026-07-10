@@ -383,6 +383,19 @@ impl RouterService {
         }
 
         if let Some(forward_config) = &config.client_cert_forwarding {
+            // SECURITY (V2): Unconditionally remove the target headers from the incoming request.
+            // This prevents attackers from spoofing identity headers on unauthenticated ports (e.g. Onboarding).
+            if let Some(header_cert) = &forward_config.header_cert {
+                if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
+                    original_headers.remove(&hdr_name);
+                }
+            }
+            if let Some(header_san) = &forward_config.header_san {
+                if let Ok(hdr_name) = header::HeaderName::from_bytes(header_san.as_bytes()) {
+                    original_headers.remove(&hdr_name);
+                }
+            }
+
             tracing::warn!("Client cert forwarding is ENABLED in config!");
             if let Some(header_cert) = &forward_config.header_cert {
                 if let Some(pem) = extensions.get::<crate::PemCertExtension>() {

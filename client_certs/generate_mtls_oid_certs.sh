@@ -71,12 +71,15 @@ openssl genrsa -out "$CLIENT_KEY" 2048
 # Schritt 3.3: Erstelle die Konfigurationsdatei für das Client-Zertifikat.
 # OIDs werden dynamisch basierend auf dem Parameter -o in das Zertifikat geschrieben.
 OID_EXTENSIONS=""
-IFS=',' read -ra SUFFIX_ARRAY <<< "$SUFFIXES"
-for suffix in "${SUFFIX_ARRAY[@]}"; do
-    # Der Text "Proxy-RBAC-Role" ist ein Dummy. Der Proxy wertet nur die nackte OID aus.
-    OID_EXTENSIONS+="${BASE_OID}.${suffix} = ASN1:UTF8String:Proxy-RBAC-Role
+
+if [ -n "$SUFFIXES" ] && [ "$SUFFIXES" != "none" ]; then
+    IFS=',' read -ra SUFFIX_ARRAY <<< "$SUFFIXES"
+    for suffix in "${SUFFIX_ARRAY[@]}"; do
+        # Der Text "Proxy-RBAC-Role" ist ein Dummy. Der Proxy wertet nur die nackte OID aus.
+        OID_EXTENSIONS+="${BASE_OID}.${suffix} = ASN1:UTF8String:Proxy-RBAC-Role
 "
-done
+    done
+fi
 
 cat > "$CLIENT_EXT" <<EOF
 [ req ]

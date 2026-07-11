@@ -58,12 +58,32 @@ Ordnet OID-Suffixe, die bei der Authentifizierung (mTLS oder JWT) gefunden werde
 #### Client-Zertifikate mit OIDs generieren
 Um selbst gültige Client-Zertifikate für Test- oder Produktionszwecke zu erstellen, liegt dem Projekt das Skript [`client_certs/generate_mtls_oid_certs.sh`](file:///Users/fredi/Data/Projekte/Rust/260225_Tower_Hyper_Rustls_refactor_client_gprc/client_certs/generate_mtls_oid_certs.sh) bei.
 
-**Was macht das Skript?**
-1. Es liest vollautomatisch die `pki_base_oid` aus Ihrer aktuellen `Config.toml` aus (z.B. `1.3.6.1.4.1.65111`).
+**Verwendung des Skripts**
+Das Skript kann bequem über Kommandozeilenparameter gesteuert werden:
+
+* **`-c`**: Common Name (CN) des Zertifikats (Standard: `client.weirich`). Dient der Übersichtlichkeit für Administratoren.
+* **`-e`**: E-Mail-Adresse (Standard: `alfred.weirich@gmail.com`).
+* **`-o`**: Kommagetrennte Liste der OID-Suffixe, aus denen die Berechtigungen (Rollen) abgeleitet werden sollen (Standard: `1`).
+
+**Beispiele:**
+```bash
+# Erstellt ein Zertifikat für einen Admin (Rolle 1):
+./generate_mtls_oid_certs.sh -c admin.weirich -o 1
+
+# Erstellt ein Multirole-Zertifikat (z.B. Operator und Viewer):
+./generate_mtls_oid_certs.sh -c dev.weirich -o 2,3
+
+# Erstellt ein Zertifikat GANZ OHNE Rollen (Gast-Zugriff):
+./generate_mtls_oid_certs.sh -c guest.weirich -o "none"
+```
+
+**Wie funktioniert die Zuweisung technisch?**
+1. Das Skript liest vollautomatisch die `pki_base_oid` aus Ihrer aktuellen `Config.toml` aus (z.B. `1.3.6.1.4.1.65111`).
 2. Es generiert eine lokale Root-CA (`ca.cert.pem`), die Sie später im Server als Trust-Anchor (`Server.mtls_client_ca_file`) hinterlegen können.
-3. Es injiziert die OID-Suffixe dynamisch in das neue Zertifikat. Zum Beispiel baut es das Suffix `.1` zusammen (`1.3.6.1.4.1.65111.1`).
-4. Da in Ihrer `Config.toml` definiert ist, dass `"1" = "Admin"` bedeutet, bekommt das erstellte Zertifikat durch diese OID automatisch Admin-Rechte auf dem Proxy!
-5. Am Ende spuckt das Skript eine `client.p12` Datei aus, die Sie direkt in Postman, cURL oder den Browser importieren können.
+3. Es injiziert die gewählten OID-Suffixe dynamisch in das neue Zertifikat. Werden z.B. `-o 1,2` übergeben, injiziert es `...65111.1` und `...65111.2`.
+4. Der Proxy wertet *nur* diese OIDs aus. Ist ein Suffix im Zertifikat enthalten (z.B. die `1`), bekommt der Client automatisch die Rolle, die in der `[oid_mapping]` Tabelle steht (hier: `Admin`).
+5. **Fallback:** Wird `-o "none"` übergeben, enthält das Zertifikat keine OIDs. Der Proxy stuft diesen gültig authentifizierten, aber rollenlosen Client dann automatisch auf die Rolle **`Guest`** zurück.
+6. Am Ende spuckt das Skript eine `client.p12` Datei aus, die Sie direkt in Postman, cURL oder den Browser importieren können.
 
 ---
 

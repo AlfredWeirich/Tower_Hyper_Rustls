@@ -41,7 +41,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     
     # The network interface IP to bind to. 
     # Use "0.0.0.0" to listen on all interfaces, or a specific local IP.
-    ip = "192.168.178.23"
+    ip = "0.0.0.0"
     
     # The TCP port the server will listen on.
     port = 1336
@@ -196,7 +196,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
 # Onboarding Server (Public - no mTLS)
 # =============================================================================
             name = "onboarding_server"
-            ip = "192.168.178.23"
+            ip = "0.0.0.0"
             port = 1337
             protocol = "https"
             service = "Router"

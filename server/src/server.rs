@@ -1,7 +1,8 @@
 //! # Server Binary — Entry Point & Lifecycle
 //!
 //! This is the main executable for the server application. It orchestrates:
-//!
+//! RUST_LOG=warn,server=trace,server::middleware::logger=trace cargo run -p server --release
+//! 
 //! 1. **Configuration loading** via [`Config::init`].
 //! 2. **Tokio runtime creation** with a configurable number of worker threads.
 //! 3. **Tracing / logging setup** (stdout + optional rolling-file appender).

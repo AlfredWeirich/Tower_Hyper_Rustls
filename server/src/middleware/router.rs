@@ -37,7 +37,7 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde::de::DeserializeSeed;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic_reflection::pb::v1::{
+use tonic_reflection::pb::v1alpha::{
     ServerReflectionRequest, server_reflection_client::ServerReflectionClient,
     server_reflection_request::MessageRequest,
 };
@@ -1059,13 +1059,6 @@ pub async fn build_grpc_pool(
                     let ca = tonic::transport::Certificate::from_pem(pem);
                     tls = tls.ca_certificate(ca);
                 }
-            } else {
-                let pem = std::fs::read("./server_certs/self_signed/myca.pem")
-                    .unwrap_or_else(|_| Vec::new());
-                if !pem.is_empty() {
-                    let ca = tonic::transport::Certificate::from_pem(pem);
-                    tls = tls.ca_certificate(ca);
-                }
             }
 
             // Client Identity (mTLS)
@@ -1077,13 +1070,6 @@ pub async fn build_grpc_pool(
             {
                 let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
                 tls = tls.identity(identity);
-            }
-        } else {
-            let pem =
-                std::fs::read("./server_certs/self_signed/myca.pem").unwrap_or_else(|_| Vec::new());
-            if !pem.is_empty() {
-                let ca = tonic::transport::Certificate::from_pem(pem);
-                tls = tls.ca_certificate(ca);
             }
         }
 
@@ -1102,7 +1088,7 @@ pub async fn build_grpc_pool(
 
     // Using tonic-reflection API
     let response: tonic::Response<
-        tonic::Streaming<tonic_reflection::pb::v1::ServerReflectionResponse>,
+        tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>,
     > = reflection_client
         .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
         .await?;
@@ -1111,7 +1097,7 @@ pub async fn build_grpc_pool(
     let mut current_services = Vec::new();
     if let Some(res) = response_stream.message().await?
         && let Some(
-            tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(
+            tonic_reflection::pb::v1alpha::server_reflection_response::MessageResponse::ListServicesResponse(
                 list_res,
             ),
         ) = res.message_response
@@ -1138,7 +1124,7 @@ pub async fn build_grpc_pool(
         .await?;
 
         let response: tonic::Response<
-            tonic::Streaming<tonic_reflection::pb::v1::ServerReflectionResponse>,
+            tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>,
         > = reflection_client
             .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
             .await?;
@@ -1146,7 +1132,7 @@ pub async fn build_grpc_pool(
 
         if let Some(res) = response_stream.message().await?
             && let Some(
-                tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(
+                tonic_reflection::pb::v1alpha::server_reflection_response::MessageResponse::FileDescriptorResponse(
                     fd_res,
                 ),
             ) = res.message_response

@@ -694,6 +694,8 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
                                             }
 
                                             if is_ok && health_score_ok {
+                                                let current_score = target_arc.upstreams[idx].current_score.load(std::sync::atomic::Ordering::Relaxed);
+                                                tracing::trace!("{}: Health check successful for '{}', score: {}", server_name, final_uri, current_score);
                                                 // If the node was previously considered dead, revive it in the LB
                                                 if !target_arc.upstreams[idx].is_alive.load(std::sync::atomic::Ordering::Relaxed) {
                                                     info!("{}: Health check recovered '{}'", server_name, final_uri);

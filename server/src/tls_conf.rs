@@ -145,9 +145,9 @@ pub fn tls_config(
                     .map_err(|e| Error::msg(format!("{server_name}: Failed to add CA: {e}")))?;
                 trace!("{server_name}: Added CA from {}", config.ssl_client_ca);
             }
-            // Optionally load and add a CRL for certificate revocation checks
             if let Some(ref crl_path) = config.ssl_client_crl {
-                let crl = CertificateRevocationListDer::from_pem_file(crl_path)?;
+                let crl = CertificateRevocationListDer::from_pem_file(crl_path)
+                    .map_err(|e| Error::msg(format!("{server_name}: Failed to load CRL from '{crl_path}': {e}")))?;
                 trace!("{server_name}: Added CRL from {crl_path}");
                 crls.push(crl);
             }

@@ -913,6 +913,7 @@ impl Service<Request<SrvBody>> for RouterService {
                                     "{}: Retrying gRPC request... (Attempt {}/{})",
                                     server_name, attempts, max_retries
                                 );
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 continue;
                             } else {
                                 return Ok(build_error_response(

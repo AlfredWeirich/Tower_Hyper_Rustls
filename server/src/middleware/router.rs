@@ -690,7 +690,12 @@ impl Service<Request<SrvBody>> for RouterService {
                 }
 
                 if route_info.backend_type == RouteBackendType::GrpcTranscoding {
-                    // Try to lazy load the descriptor pool if we don't have it yet
+                    // ── gRPC Transcoding: JSON to Protobuf ───────────────────
+                    // In this mode, the client sends HTTP/1.1 JSON, but the backend
+                    // expects HTTP/2 gRPC. We must translate the payload dynamically.
+                    
+                    // Try to lazy load the descriptor pool if we don't have it yet.
+                    // This pool holds the compiled schemas needed for translation.
                     let mut pool_guard = route_info.target.grpc_pool.write().await;
                     if pool_guard.is_none() {
                         let pool = build_grpc_pool(
@@ -715,7 +720,9 @@ impl Service<Request<SrvBody>> for RouterService {
                     let pool = pool_guard.as_ref().unwrap().clone();
                     drop(pool_guard);
 
-                    // Transcode JSON to Protobuf
+                    // ── 1. Identify Service and Method ───────────────────────
+                    // A valid gRPC request path usually ends with `/Service/Method`.
+                    // We extract these to locate the schema in our DescriptorPool.
                     let uri_path = parts.uri.path().trim_start_matches('/');
                     let uri_parts: Vec<&str> = uri_path.split('/').collect();
                     tracing::debug!(
@@ -723,6 +730,7 @@ impl Service<Request<SrvBody>> for RouterService {
                         uri_path,
                         uri_parts.len()
                     );
+                    
                     if original_method != Method::POST || uri_parts.len() < 2 {
                         warn!(
                             "{}: Invalid gRPC request method or path structure",
@@ -764,12 +772,15 @@ impl Service<Request<SrvBody>> for RouterService {
                         }
                     };
 
+                    // ── 2. JSON to Protobuf Conversion ───────────────────────
                     let RequestBody::Buffered(req_body_bytes) = &request_body else {
                         return Ok(build_error_response(
                             "Streaming not supported for gRPC transcoding yet",
                             StatusCode::INTERNAL_SERVER_ERROR,
                         ));
                     };
+                    
+                    // Parse the raw JSON using the schema of the method's input type.
                     let mut deserializer = serde_json::Deserializer::from_slice(req_body_bytes);
                     let dynamic_req_msg = match method_desc.input().deserialize(&mut deserializer) {
                         Ok(msg) => msg,
@@ -781,6 +792,7 @@ impl Service<Request<SrvBody>> for RouterService {
                         }
                     };
 
+                    // Serialize the parsed dynamic message into Protobuf binary format.
                     let mut protobuf_payload = BytesMut::new();
                     if let Err(e) = dynamic_req_msg.encode(&mut protobuf_payload) {
                         return Ok(build_error_response(
@@ -789,7 +801,9 @@ impl Service<Request<SrvBody>> for RouterService {
                         ));
                     }
 
-                    // Wrap in gRPC framing
+                    // ── 3. gRPC Framing ──────────────────────────────────────
+                    // Standard gRPC requires a 5-byte header: 
+                    // 1 byte for compression flag (0 = none), 4 bytes for message length.
                     let mut grpc_frame = BytesMut::with_capacity(5 + protobuf_payload.len());
                     grpc_frame.put_u8(0);
                     grpc_frame.put_u32(protobuf_payload.len() as u32);
@@ -811,7 +825,10 @@ impl Service<Request<SrvBody>> for RouterService {
                         final_target_uri
                     );
 
-                    // Construct a clean HTTP/2 request suitable for gRPC
+                    // ── 4. Construct HTTP/2 gRPC Request ─────────────────────
+                    // Construct a clean HTTP/2 request suitable for gRPC.
+                    // We must force HTTP/2, set Content-Type to application/grpc,
+                    // and allow "trailers" using the TE header.
                     let mut builder = Request::builder()
                         .method(Method::POST)
                         .uri(final_target_uri)
@@ -844,6 +861,7 @@ impl Service<Request<SrvBody>> for RouterService {
                                 ));
                             }
 
+                            // ── 5. Unpack gRPC Response & Convert to JSON ────────
                             let res_body_bytes = match res.body_mut().collect().await {
                                 Ok(c) => c.to_bytes(),
                                 Err(e) => {
@@ -854,6 +872,7 @@ impl Service<Request<SrvBody>> for RouterService {
                                 }
                             };
 
+                            // Verify we have at least the 5-byte gRPC frame header.
                             if res_body_bytes.len() < 5 {
                                 return Ok(build_error_response(
                                     "Invalid gRPC Response",
@@ -870,8 +889,11 @@ impl Service<Request<SrvBody>> for RouterService {
                                     StatusCode::BAD_GATEWAY,
                                 ));
                             }
+                            
+                            // Extract the raw Protobuf bytes.
                             let raw_protobuf_res = &res_body_bytes[5..5 + payload_len];
 
+                            // Deserialize Protobuf into a dynamic message based on schema.
                             let mut dynamic_res_msg = DynamicMessage::new(method_desc.output());
                             if let Err(e) = dynamic_res_msg.merge(raw_protobuf_res) {
                                 return Ok(build_error_response(
@@ -880,6 +902,7 @@ impl Service<Request<SrvBody>> for RouterService {
                                 ));
                             }
 
+                            // Serialize the dynamic message back into a JSON string for the client.
                             let response_json = match serde_json::to_string(&dynamic_res_msg) {
                                 Ok(s) => s,
                                 Err(e) => {
@@ -924,7 +947,9 @@ impl Service<Request<SrvBody>> for RouterService {
                         }
                     }
                 } else {
-                    // Standard REST proxy handling
+                    // ── Standard REST Proxy Handling / gRPC Passthrough ───────
+                    // Handles HTTP/1.1 and direct HTTP/2 proxying without translating the body.
+                    
                     let boxed_body: ServiceRespBody = match &mut request_body {
                         RequestBody::Stream(_b) => {
                             // We can only stream once! If this fails, we cannot retry.
@@ -1034,7 +1059,28 @@ fn build_error_response(msg: &str, status: StatusCode) -> Response<ServiceRespBo
         .expect("Response builder failed")
 }
 
-/// Dynamically loads the gRPC Reflection DescriptorPool
+/// Dynamically loads the gRPC Reflection DescriptorPool from an upstream server.
+///
+/// This function connects to the specified gRPC backend and utilizes the
+/// **gRPC Server Reflection Protocol** to discover and download the protobuf
+/// message and service descriptors. These descriptors are essential for
+/// **gRPC Transcoding**, as they provide the schema required to convert incoming
+/// JSON HTTP/1.1 requests into binary HTTP/2 gRPC requests.
+///
+/// # Process
+/// 1. Connects to the backend, applying root CAs and mTLS certificates if configured.
+/// 2. Requests a list of all available services via the reflection API.
+/// 3. For each service, requests the `FileDescriptorProto` containing its schema.
+/// 4. Compiles these descriptors into a `DescriptorPool` used for dynamic message parsing.
+///
+/// # Arguments
+///
+/// * `backend_base_uri` – The base URI of the upstream gRPC server.
+/// * `router_params` – Optional routing configuration containing TLS keys and certificates.
+///
+/// # Returns
+///
+/// An `Arc<DescriptorPool>` that can be cached and used for subsequent transcoding requests.
 pub async fn build_grpc_pool(
     backend_base_uri: &Uri,
     router_params: Option<&crate::configuration::RouterParams>,
@@ -1049,11 +1095,13 @@ pub async fn build_grpc_pool(
     let mut endpoint = tonic::transport::Channel::from_shared(target)?;
 
     if scheme == "https" {
-        // Must configure the expected TLS domain name, usually we'll loosen this per the IP
+        // ── Configure TLS for the gRPC connection ─────────────────────────
+        // Must configure the expected TLS domain name. Since we often route by IP,
+        // we use the host part of the URI as the domain name for SNI.
         let mut tls = tonic::transport::ClientTlsConfig::new().domain_name(host);
 
-        // Root CA
         if let Some(params) = router_params {
+            // Load Root CA to verify the upstream server's certificate.
             if let Some(ca_path) = &params.ssl_root_certificate {
                 let pem = std::fs::read(ca_path).unwrap_or_else(|_| Vec::new());
                 if !pem.is_empty() {
@@ -1062,7 +1110,8 @@ pub async fn build_grpc_pool(
                 }
             }
 
-            // Client Identity (mTLS)
+            // Load Client Identity for Mutual TLS (mTLS) if configured.
+            // This proves the proxy's identity to the upstream gRPC server.
             if params.authentication == crate::configuration::AuthenticationMethod::ClientCert
                 && let (Some(cert_path), Some(key_path)) =
                     (&params.ssl_client_certificate, &params.ssl_client_key)
@@ -1077,9 +1126,13 @@ pub async fn build_grpc_pool(
         endpoint = endpoint.tls_config(tls)?;
     }
 
+    // Establish the multiplexed HTTP/2 channel to the backend.
     let channel = endpoint.connect().await?;
     let mut reflection_client = ServerReflectionClient::new(channel);
 
+    // ── 1. Request List of Services ───────────────────────────────────────
+    // We open a bidirectional streaming RPC to the Server Reflection endpoint
+    // and ask for a list of all services exposed by the backend.
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(ServerReflectionRequest {
         host: String::new(),
@@ -1087,7 +1140,7 @@ pub async fn build_grpc_pool(
     })
     .await?;
 
-    // Using tonic-reflection API
+    // Execute the reflection call using the tonic-reflection API.
     let response: tonic::Response<
         tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>,
     > = reflection_client
@@ -1107,12 +1160,19 @@ pub async fn build_grpc_pool(
                 current_services.push(service.name);
             }
         }
-    // Explicitly drop tx after reading to prevent premature stream cancellation
+    
+    // Explicitly drop the transmit half `tx` after reading the list to 
+    // gracefully close the stream and prevent premature cancellation.
     drop(tx);
 
     let mut pool = DescriptorPool::new();
 
+    // ── 2. Fetch File Descriptors for Each Service ────────────────────────
+    // Now that we have the names of the services, we request their underlying
+    // FileDescriptorProto objects. These contain the actual protobuf schema
+    // (messages, enums, RPC signatures).
     for service_name in current_services {
+        // Skip the reflection service itself as we don't need to transcode to it.
         if service_name.starts_with("grpc.reflection") {
             continue;
         }
@@ -1138,6 +1198,7 @@ pub async fn build_grpc_pool(
                 ),
             ) = res.message_response
             {
+                // Decode each returned FileDescriptorProto and add it to our pool.
                 for fd_bytes in fd_res.file_descriptor_proto {
                     let fd_proto = prost::Message::decode(fd_bytes.as_ref())?;
                     pool.add_file_descriptor_proto(fd_proto)?;

@@ -114,7 +114,7 @@ where
         // --- OPTIMIZATION: Avoid .to_string() and .clone() ---
         // We use &str directly from the request to avoid heap allocations.
         let server_name = self.server_name;
-        tracing::trace!("{}: Inspection", server_name);
+        //tracing::trace!("{}: Inspection", server_name);
         let method = req.method().as_str();
         let path = req.uri().path();
         let query = req.uri().query().unwrap_or("");

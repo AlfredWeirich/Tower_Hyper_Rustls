@@ -1,7 +1,7 @@
 //! # Server Binary — Entry Point & Lifecycle
 //!
 //! This is the main executable for the server application. It orchestrates:
-//! RUST_LOG=warn,server=trace,server::middleware::logger=trace cargo run -p server --release
+//! RUST_LOG=warn,proxy_server=trace,proxy_server::middleware::logger=trace cargo run -p proxy_server --release
 //! 
 //! 1. **Configuration loading** via [`Config::init`].
 //! 2. **Tokio runtime creation** with a configurable number of worker threads.
@@ -74,8 +74,8 @@ use tracing_appender::{non_blocking::WorkerGuard, rolling::RollingFileAppender};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 // === Internal Modules ===
-use server::configuration::UserRole;
-use server::{
+use proxy_server::configuration::UserRole;
+use proxy_server::{
     BoxedCloneService, ConnectionHandler,
     configuration::{
         AuthenticationMethod, CompiledAllowedPathes, Config, MiddlewareLayer, Protocol,
@@ -96,7 +96,7 @@ use hyper::{Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
 use rustls::ServerConfig as RustlsServerConfig;
-use server::H3Body;
+use proxy_server::H3Body;
 use std::sync::Mutex;
 
 ///    Main entry point for the server application.
@@ -497,8 +497,8 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
         for route in &server_config.parsed_routes {
             // The interval (in seconds) between health checks. 0 means disabled.
             let interval = route.target.active_health_check_interval;
-            let is_grpc = route.backend_type == server::configuration::RouteBackendType::GrpcTranscoding 
-                || route.backend_type == server::configuration::RouteBackendType::GrpcPassthrough;
+            let is_grpc = route.backend_type == proxy_server::configuration::RouteBackendType::GrpcTranscoding 
+                || route.backend_type == proxy_server::configuration::RouteBackendType::GrpcPassthrough;
 
             // If interval > 0, the user wants the proxy to automatically ping the servers in the background
             // to evict them from the load-balancer if they die, and re-add them when they recover.
@@ -568,7 +568,7 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
                                             // Acquire write lock to initialize the grpc reflection pool if empty
                                             let mut pool_guard = target_arc.grpc_pool.write().await;
                                             if pool_guard.is_none() {
-                                                match server::middleware::router::build_grpc_pool(&base_uri, Some(&router_params)).await {
+                                                match proxy_server::middleware::router::build_grpc_pool(&base_uri, Some(&router_params)).await {
                                                     Ok(p) => *pool_guard = Some(p),
                                                     Err(e) => tracing::warn!("{}: Failed to load gRPC reflection schema for active health check: {:?}", server_name, e)
                                                 }
@@ -817,13 +817,13 @@ fn apply_layers(
             MiddlewareLayer::JwtAuth(keys) => JwtAuthLayer::new(keys, server_name)
                 .layer(svc)
                 .boxed_clone(),
-            MiddlewareLayer::RateLimiter(server::configuration::RateLimiter::Simple(cfg)) => {
+            MiddlewareLayer::RateLimiter(proxy_server::configuration::RateLimiter::Simple(cfg)) => {
                 let dur = Duration::from_secs_f32(1.0 / cfg.requests_per_second as f32);
                 SimpleRateLimiterLayer::new(dur, server_name)
                     .layer(svc)
                     .boxed_clone()
             }
-            MiddlewareLayer::RateLimiter(server::configuration::RateLimiter::TokenBucket(cfg)) => {
+            MiddlewareLayer::RateLimiter(proxy_server::configuration::RateLimiter::TokenBucket(cfg)) => {
                 TokenBucketRateLimiterLayer::new(
                     cfg.max_capacity,
                     cfg.refill,

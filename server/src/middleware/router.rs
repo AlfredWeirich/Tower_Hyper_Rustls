@@ -405,26 +405,26 @@ impl RouterService {
                 }
             }
 
-            tracing::warn!("Client cert forwarding is ENABLED in config!");
+            tracing::trace!("Client cert forwarding is ENABLED in config!");
             if let Some(header_cert) = &forward_config.header_cert {
                 if let Some(pem) = extensions.get::<crate::PemCertExtension>() {
                     if let Ok(hdr_val) = header::HeaderValue::from_str(&pem.0) {
                         if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
-                            tracing::warn!("Injecting PEM into header: {}", hdr_name);
+                            tracing::trace!("Injecting PEM into header: {}", hdr_name);
                             original_headers.insert(hdr_name, hdr_val);
                         }
                     }
                 }
             }
             if let Some(header_san) = &forward_config.header_san {
-                tracing::warn!("Config expects SAN header name: '{}'", header_san);
+                tracing::trace!("Config expects SAN header name: '{}'", header_san);
                 if let Some(san) = extensions.get::<crate::SanCertExtension>() {
-                    tracing::warn!("Found SanCertExtension with value: '{}'", san.0);
+                    tracing::trace!("Found SanCertExtension with value: '{}'", san.0);
                     match header::HeaderValue::from_str(&san.0) {
                         Ok(hdr_val) => {
                             match header::HeaderName::from_bytes(header_san.as_bytes()) {
                                 Ok(hdr_name) => {
-                                    tracing::warn!("SUCCESS! Injecting SAN into header: {}", hdr_name);
+                                    tracing::trace!("SUCCESS! Injecting SAN into header: {}", hdr_name);
                                     original_headers.insert(hdr_name, hdr_val);
                                 },
                                 Err(e) => tracing::warn!("FAILED to parse HeaderName from config '{}': {}", header_san, e),
@@ -433,11 +433,11 @@ impl RouterService {
                         Err(e) => tracing::warn!("FAILED to parse HeaderValue from SAN '{}': {}", san.0, e),
                     }
                 } else {
-                    tracing::warn!("extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions.");
+                    tracing::trace!("extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions.");
                 }
             }
         } else {
-            tracing::warn!("Client cert forwarding is NOT enabled in config!");
+            tracing::trace!("Client cert forwarding is NOT enabled in config!");
         }
 
         Ok(())

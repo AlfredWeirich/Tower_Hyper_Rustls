@@ -138,6 +138,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     "/chat.ChatService/MarkAsRead" = [".*"]
     "/chat.ChatService/StreamGlobalEvents" = [".*"]
     "/chat.ChatService/RegisterPushToken" = [".*"]
+    "/chat.ChatService/SendGlobalEvent" = [".*"]
 
     #[Server.AllowedPathes.PUT]
     #"/" = ["^/?$", "^/\\?id=\\d+$"]

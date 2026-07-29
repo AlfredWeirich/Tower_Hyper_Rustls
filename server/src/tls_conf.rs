@@ -288,24 +288,24 @@ pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<Stri
     let mut san_dns = None;
     match X509Certificate::from_der(cert_der) {
         Ok((_, x509)) => {
-            tracing::warn!("Successfully parsed X509 cert. Looking for SAN extension...");
+            tracing::debug!("Successfully parsed X509 cert. Looking for SAN extension...");
             let mut found_san_ext = false;
             for ext in x509.extensions() {
                 if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
                     found_san_ext = true;
-                    tracing::warn!("Found SubjectAlternativeName extension. Iterating GeneralNames...");
+                    tracing::debug!("Found SubjectAlternativeName extension. Iterating GeneralNames...");
                     for name in &san.general_names {
-                        tracing::warn!("Found GeneralName: {:?}", name);
+                        tracing::debug!("Found GeneralName: {:?}", name);
                         if let x509_parser::extensions::GeneralName::DNSName(domain) = name {
                             san_dns = Some(domain.to_string());
-                            tracing::warn!("Extracted DNSName SAN: {}", domain);
+                            tracing::debug!("Extracted DNSName SAN: {}", domain);
                             break;
                         }
                     }
                 }
             }
             if !found_san_ext {
-                tracing::warn!("No SubjectAlternativeName extension found in client cert!");
+                tracing::debug!("No SubjectAlternativeName extension found in client cert!");
             }
         },
         Err(e) => {

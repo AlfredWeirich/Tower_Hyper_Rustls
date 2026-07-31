@@ -984,7 +984,13 @@ impl CompiledAllowedPathes {
             "POST" => &self.post,
             "PUT" => &self.put,
             "DELETE" => &self.delete,
-            _ => return false, // Other methods are not allowed by default
+            "OPTIONS" => {
+                if let Some(regex_list) = self.post.get(path).or_else(|| self.get.get(path)) {
+                    return regex_list.iter().any(|re| re.is_match(&full_path));
+                }
+                return false;
+            }
+            _ => return false,
         };
 
         // Check: are there regex rules for this base path (e.g. "/help")?

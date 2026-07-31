@@ -268,7 +268,7 @@ port = 1338
 protocol = "https"
 authentication = "ClientCert"
 service = "Router"
-enabled = true
+enabled = false
 
 [Server.server_certs]
 ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"

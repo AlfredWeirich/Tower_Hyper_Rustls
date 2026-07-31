@@ -1,1 +1,1 @@
-RUST_LOG=warn,proxy_server=warn,proxy_server::middleware::logger=warn cargo run -p proxy_server --release
+RUST_LOG=info,proxy_server=info,proxy_server::middleware::logger=INFO cargo run -p proxy_server --release

@@ -985,7 +985,12 @@ impl CompiledAllowedPathes {
             "PUT" => &self.put,
             "DELETE" => &self.delete,
             "OPTIONS" => {
-                if let Some(regex_list) = self.post.get(path).or_else(|| self.get.get(path)) {
+                if let Some(regex_list) = self.post
+                    .get(path)
+                    .or_else(|| self.get.get(path))
+                    .or_else(|| self.put.get(path))
+                    .or_else(|| self.delete.get(path))
+                {
                     return regex_list.iter().any(|re| re.is_match(&full_path));
                 }
                 return false;

@@ -408,7 +408,8 @@ impl RouterService {
             tracing::trace!("Client cert forwarding is ENABLED in config!");
             if let Some(header_cert) = &forward_config.header_cert {
                 if let Some(pem) = extensions.get::<crate::PemCertExtension>() {
-                    let pem_escaped = pem.0.replace('\n', "\t");
+                    // We use URL-encoding instead of replacing \n with \t, as URL-encoding is the industry standard (e.g. used by NGINX).
+                    let pem_escaped = urlencoding::encode(&pem.0).into_owned();
                     if let Ok(hdr_val) = header::HeaderValue::from_str(&pem_escaped) {
                         if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
                             tracing::trace!("Injecting PEM into header: {}", hdr_name);

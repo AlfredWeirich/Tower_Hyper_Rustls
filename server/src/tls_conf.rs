@@ -282,7 +282,6 @@ pub fn extract_oids_from_cert(cert_der: &[u8]) -> Vec<String> {
 pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<String>) {
     // 1. Encode DER to PEM
     let pem = ::pem::encode(&::pem::Pem::new("CERTIFICATE", cert_der));
-    let encoded_pem = urlencoding::encode(&pem).into_owned();
 
     // 2. Extract SAN
     let mut san_dns = None;
@@ -312,6 +311,5 @@ pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<Stri
             tracing::warn!("Failed to parse client cert DER: {:?}", e);
         }
     }
-
-    (Some(encoded_pem), san_dns)
+    (Some(pem), san_dns)
 }

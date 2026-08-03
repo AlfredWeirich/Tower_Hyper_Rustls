@@ -962,6 +962,24 @@ impl CompiledAllowedPathes {
         })
     }
 
+    /// Helper to find matching regex rules for a path, supporting wildcard suffixes (e.g. `/*`).
+    fn find_rules<'a>(map: &'a HashMap<String, Vec<Regex>>, path: &str) -> Option<&'a Vec<Regex>> {
+        // 1. Exact match (fast path)
+        if let Some(rules) = map.get(path) {
+            return Some(rules);
+        }
+        // 2. Prefix match for wildcards (e.g. "/chat.ChatService/*")
+        for (key, rules) in map {
+            if key.ends_with("/*") {
+                let prefix = &key[..key.len() - 1]; // e.g. "/chat.ChatService/"
+                if path.starts_with(prefix) {
+                    return Some(rules);
+                }
+            }
+        }
+        None
+    }
+
     /// Checks whether a `(method, path, query)` triple matches the allowed rules.
     ///
     /// The full path (including query string if present) is tested against every
@@ -985,11 +1003,10 @@ impl CompiledAllowedPathes {
             "PUT" => &self.put,
             "DELETE" => &self.delete,
             "OPTIONS" => {
-                if let Some(regex_list) = self.post
-                    .get(path)
-                    .or_else(|| self.get.get(path))
-                    .or_else(|| self.put.get(path))
-                    .or_else(|| self.delete.get(path))
+                if let Some(regex_list) = Self::find_rules(&self.post, path)
+                    .or_else(|| Self::find_rules(&self.get, path))
+                    .or_else(|| Self::find_rules(&self.put, path))
+                    .or_else(|| Self::find_rules(&self.delete, path))
                 {
                     return regex_list.iter().any(|re| re.is_match(&full_path));
                 }
@@ -999,7 +1016,7 @@ impl CompiledAllowedPathes {
         };
 
         // Check: are there regex rules for this base path (e.g. "/help")?
-        if let Some(regex_list) = map.get(path) {
+        if let Some(regex_list) = Self::find_rules(map, path) {
             // If so: does at least one of the rules match the full_path?
             regex_list.iter().any(|re| re.is_match(&full_path))
         } else {

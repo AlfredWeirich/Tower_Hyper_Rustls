@@ -122,6 +122,9 @@ where
             "No Roles".to_string()
         };
 
+        let req_method = req.method().clone();
+        let req_origin = req.headers().get(hyper::header::ORIGIN).cloned();
+
         tracing::info!(
             "{}: --> {} {} | IP: {} | Roles: {} ",
             server_name,
@@ -140,6 +143,21 @@ where
             match &response {
                 Ok(res) => {
                     let status = res.status();
+                    
+                    let is_cors_preflight_failed = req_method == hyper::Method::OPTIONS 
+                        && req_origin.is_some() 
+                        && status == hyper::StatusCode::OK
+                        && res.headers().get(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none();
+
+                    if is_cors_preflight_failed {
+                        let origin_str = req_origin.as_ref().and_then(|h| h.to_str().ok()).unwrap_or("unknown");
+                        tracing::warn!(
+                            "{}: !! CORS Preflight Blocked: Origin '{}' is not allowed",
+                            server_name,
+                            origin_str
+                        );
+                    }
+
                     if status.is_server_error() {
                         tracing::error!(
                             "{}: <-- Response: Status {} | Headers: {:?}",
@@ -147,7 +165,7 @@ where
                             status,
                             res.headers()
                         );
-                    } else if status.is_client_error() {
+                    } else if status.is_client_error() || is_cors_preflight_failed {
                         tracing::warn!(
                             "{}: <-- Response: Status {} | Headers: {:?}",
                             server_name,

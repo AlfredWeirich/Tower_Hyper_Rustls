@@ -139,12 +139,29 @@ where
             let response = fut.await;
             match &response {
                 Ok(res) => {
-                    tracing::info!(
-                        "{}: <-- Response: Status {} | Headers: {:?}",
-                        server_name,
-                        res.status(),
-                        res.headers()
-                    );
+                    let status = res.status();
+                    if status.is_server_error() {
+                        tracing::error!(
+                            "{}: <-- Response: Status {} | Headers: {:?}",
+                            server_name,
+                            status,
+                            res.headers()
+                        );
+                    } else if status.is_client_error() {
+                        tracing::warn!(
+                            "{}: <-- Response: Status {} | Headers: {:?}",
+                            server_name,
+                            status,
+                            res.headers()
+                        );
+                    } else {
+                        tracing::info!(
+                            "{}: <-- Response: Status {} | Headers: {:?}",
+                            server_name,
+                            status,
+                            res.headers()
+                        );
+                    }
                 }
                 Err(err) => {
                     tracing::error!("{}: !! Error: {:?}", server_name, err);

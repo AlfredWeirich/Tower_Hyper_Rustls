@@ -408,11 +408,14 @@ impl RouterService {
             tracing::trace!("Client cert forwarding is ENABLED in config!");
             if let Some(header_cert) = &forward_config.header_cert {
                 if let Some(pem) = extensions.get::<crate::PemCertExtension>() {
-                    if let Ok(hdr_val) = header::HeaderValue::from_str(&pem.0) {
+                    let pem_escaped = pem.0.replace('\n', "\t");
+                    if let Ok(hdr_val) = header::HeaderValue::from_str(&pem_escaped) {
                         if let Ok(hdr_name) = header::HeaderName::from_bytes(header_cert.as_bytes()) {
                             tracing::trace!("Injecting PEM into header: {}", hdr_name);
                             original_headers.insert(hdr_name, hdr_val);
                         }
+                    } else {
+                        tracing::warn!("FAILED to convert escaped PEM to HeaderValue");
                     }
                 }
             }

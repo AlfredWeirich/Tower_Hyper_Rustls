@@ -166,7 +166,7 @@ use hyper::header::HeaderValue;
 
 const HSTS_VALUE: HeaderValue = HeaderValue::from_static("max-age=63072000; includeSubDomains");
 const NOSNIFF_VALUE: HeaderValue = HeaderValue::from_static("nosniff");
-const CSP_VALUE: HeaderValue = HeaderValue::from_static("default-src 'none'");
+const CSP_VALUE: HeaderValue = HeaderValue::from_static("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:");
 const CACHE_CTL_VALUE: HeaderValue = HeaderValue::from_static("no-store");
 
 // ── Connection Handler ───────────────────────────────────────────────────────

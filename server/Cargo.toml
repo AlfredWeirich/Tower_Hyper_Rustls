@@ -42,6 +42,7 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 x509-parser = "0.18.0"
 mimalloc = { version = "*", features = ["v3"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
 
 
 # Optional/Disabled dependencies

@@ -452,6 +452,8 @@ pub enum MiddlewareLayer {
     MaxPayload(usize),
     /// Adds an Alt-Svc header to the response.
     AltSvc,
+    /// Adds CORS headers to responses and handles preflight requests.
+    Cors(CorsConfig),
 }
 
 /// Rate limiter algorithm selection.
@@ -491,6 +493,9 @@ pub struct Layers {
     /// Configuration for the [`ConcurrencyLimit`](MiddlewareLayer::ConcurrencyLimit) layer.
     #[serde(rename = "ConcurrencyLimit")]
     pub concurrency_limit_config: Option<ConcurrencyLimitConfig>,
+    /// Configuration for the [`Cors`](MiddlewareLayer::Cors) layer.
+    #[serde(rename = "Cors")]
+    pub cors_config: Option<CorsConfig>,
 }
 
 // --- Helper Structures for Configuration ---
@@ -595,6 +600,23 @@ pub struct JwtAuthConfig {
 pub struct ConcurrencyLimitConfig {
     /// Maximum number of in-flight requests.
     pub max_concurrent_requests: usize,
+}
+
+/// Configuration for the CORS layer.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CorsConfig {
+    /// List of allowed origins. Use `["*"]` to allow all.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// List of allowed HTTP methods.
+    #[serde(default)]
+    pub allowed_methods: Vec<String>,
+    /// List of allowed HTTP headers.
+    #[serde(default)]
+    pub allowed_headers: Vec<String>,
+    /// Whether credentials (cookies, auth headers) are allowed.
+    #[serde(default)]
+    pub allow_credentials: bool,
 }
 
 /// Raw deserialized allowed-path rules (per HTTP method).
@@ -1071,6 +1093,11 @@ impl Layers {
                     .as_ref()
                     .map(|c| MiddlewareLayer::ConcurrencyLimit(c.max_concurrent_requests))
                     .context("Missing [Layers.ConcurrencyLimit]"),
+                "Cors" => self
+                    .cors_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::Cors(c.clone()))
+                    .context("Missing [Layers.Cors]"),
                 "RateLimiter:Simple" => self
                     .rate_limiter_config
                     .as_ref()

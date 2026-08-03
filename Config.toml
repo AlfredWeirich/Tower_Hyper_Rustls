@@ -283,7 +283,13 @@ header_cert = "x-client-cert"
 header_san = "x-client-san"
 
 [Server.Layers]
-enabled = ["Decompression", "MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+enabled = ["Logger", "Cors","Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+
+[Server.Layers.Cors]
+allowed_origins = ["https://admin.aweirich.eu", "http://localhost:3000"]
+allowed_methods = ["GET", "POST", "OPTIONS"]
+allowed_headers = ["content-type", "authorization", "x-client-cert", "x-client-san"]
+allow_credentials = true
 
 [Server.Layers.Decompression]
 max_decompressed_bytes = 10485760

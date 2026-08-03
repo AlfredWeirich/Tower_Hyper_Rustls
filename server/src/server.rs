@@ -852,6 +852,32 @@ fn apply_layers(
                 // We use the actual running port of the server
                 AltSvcLayer::new(server_port).layer(svc).boxed_clone()
             }
+            MiddlewareLayer::Cors(cfg) => {
+                let origins: Vec<hyper::http::HeaderValue> = cfg.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
+                let methods: Vec<hyper::http::Method> = cfg.allowed_methods.iter().filter_map(|m| m.parse().ok()).collect();
+                let headers: Vec<hyper::http::header::HeaderName> = cfg.allowed_headers.iter().filter_map(|h| h.parse().ok()).collect();
+                
+                let is_any_origin = cfg.allowed_origins.iter().any(|o| o == "*");
+                let is_any_method = cfg.allowed_methods.iter().any(|m| m == "*");
+                let is_any_header = cfg.allowed_headers.iter().any(|h| h == "*");
+
+                macro_rules! apply_cors {
+                    ($cors:expr) => {
+                        $cors.allow_credentials(cfg.allow_credentials).layer(svc).boxed_clone()
+                    };
+                }
+
+                match (is_any_origin, is_any_method, is_any_header) {
+                    (true, true, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(tower_http::cors::Any).allow_headers(tower_http::cors::Any)),
+                    (true, true, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(tower_http::cors::Any).allow_headers(headers)),
+                    (true, false, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(methods).allow_headers(tower_http::cors::Any)),
+                    (true, false, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(methods).allow_headers(headers)),
+                    (false, true, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(tower_http::cors::Any).allow_headers(tower_http::cors::Any)),
+                    (false, true, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(tower_http::cors::Any).allow_headers(headers)),
+                    (false, false, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(tower_http::cors::Any)),
+                    (false, false, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(headers)),
+                }
+            }
         })
 }
 

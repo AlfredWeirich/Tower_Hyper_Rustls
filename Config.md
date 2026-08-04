@@ -157,10 +157,23 @@ Zusätzliche Konfigurationsblöcke für spezifische Layer:
 Definiert die Sicherheits-Header, die der Proxy an den Client schickt. 
 **Hinweis:** Wenn dieser Layer im `enabled` Array *fehlt*, fügt der Proxy ihn zu deinem Schutz vollautomatisch mit extrem strikten Standardwerten (z. B. `default-src 'none'`) ein! Möchtest du diese Werte überschreiben (z.B. für ein Dashboard), musst du den Layer explizit aktivieren und *alle* 4 Werte definieren. Fehlen Werte, startet der Server mit einer Fehlermeldung nicht.
 
-* `content_security_policy`: String. (z. B. `"default-src 'self'; script-src 'unsafe-inline'"`)
-* `strict_transport_security`: String. (z. B. `"max-age=63072000; includeSubDomains; preload"`)
-* `x_content_type_options`: String. (z. B. `"nosniff"`)
-* `x_frame_options`: String. (z. B. `"DENY"`)
+Hier ist eine Übersicht der sinnvollsten Werte für die Konfiguration:
+
+* **`content_security_policy`** (CSP)
+  * **Für APIs (Standard):** `"default-src 'none'"` (Blockiert das Laden jeglicher externer Ressourcen).
+  * **Für Dashboards / Web-Apps:** `"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"` (Erlaubt Ressourcen der eigenen Domain sowie Inline-Skripte/Styles und Base64 Bilder).
+  * **Sehr strikte Web-App:** `"default-src 'self'"` (Erlaubt nur externe Dateien der eigenen Domain, keine Inline-Skripte).
+
+* **`strict_transport_security`** (HSTS)
+  * **Empfohlener Standard:** `"max-age=63072000; includeSubDomains; preload"` (Erzwingt sicheres HTTPS für 2 Jahre inklusive aller Subdomains).
+  * **Zum Testen:** `"max-age=86400"` (Erzwingt HTTPS nur für 1 Tag ohne Subdomains).
+
+* **`x_content_type_options`**
+  * **Immer:** `"nosniff"` (Verbietet dem Browser, den Dateityp zu erraten. Es gibt hierfür de facto keinen anderen sinnvollen Wert).
+
+* **`x_frame_options`**
+  * **Höchste Sicherheit:** `"DENY"` (Verbietet das Einbetten der Seite in iframes komplett - Schutz vor Clickjacking).
+  * **Für Dashboards (falls Einbettung nötig):** `"SAMEORIGIN"` (Erlaubt das Einbetten in iframes, aber nur auf der exakt selben Domain).
 
 #### `[Server.Layers.Cors]`
 * `allowed_origins`: Array von Strings. Liste der erlaubten Origins (z.B. `["https://admin.aweirich.eu", "http://localhost:3000"]`). Setzen Sie `["*"]`, um alle zu erlauben.

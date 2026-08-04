@@ -139,6 +139,7 @@ Jeder Layer übernimmt eine spezifische Aufgabe im Anfrage-Lebenszyklus:
 | `"Counter"` | Zählt die Anzahl der aktuell verarbeiteten Anfragen. |
 | `"Logger"` | Protokolliert Details zu Request und Response (z.B. Pfad, Statuscode, IP). |
 | `"Inspection"` | Überprüft den URL-Pfad der Anfrage anhand einer Regex-Whitelist und blockiert unerlaubte Aufrufe. |
+| `"Cors"` | Fügt CORS-Header (Cross-Origin Resource Sharing) hinzu und behandelt Preflight-Anfragen. |
 | `"Compression"` | Komprimiert die HTTP-Antworten (z. B. Gzip), um Bandbreite zu sparen. |
 | `"Decompression"` | Dekomprimiert den eingehenden Request-Body (inklusive Schutz vor "Decompression Bombs"). |
 | `"RateLimiter:Simple"` | Begrenzt die Anfragen pro Sekunde über ein hartes Limit (Fixed-Window Algorithmus). |
@@ -150,6 +151,12 @@ Jeder Layer übernimmt eine spezifische Aufgabe im Anfrage-Lebenszyklus:
 | `"AltSvc"` | Injiziert den `Alt-Svc`-Header in Antworten, um dem Client mitzuteilen, dass HTTP/3 (QUIC) verfügbar ist. |
 
 Zusätzliche Konfigurationsblöcke für spezifische Layer:
+
+#### `[Server.Layers.Cors]`
+* `allowed_origins`: Array von Strings. Liste der erlaubten Origins (z.B. `["https://admin.aweirich.eu", "http://localhost:3000"]`). Setzen Sie `["*"]`, um alle zu erlauben.
+* `allowed_methods`: Array von Strings. Erlaubte HTTP-Methoden (z.B. `["GET", "POST", "OPTIONS"]`).
+* `allowed_headers`: Array von Strings. Erlaubte HTTP-Header (z.B. `["content-type", "authorization", "x-client-cert"]`).
+* `allow_credentials`: Boolean. Gibt an, ob Credentials (z.B. Cookies oder mTLS Header) erlaubt sind.
 
 #### `[Server.Layers.Decompression]`
 * `max_decompressed_bytes`: Integer. Maximale Größe des dekomprimierten Bodys in Bytes (Schutz vor Decompression Bombs).

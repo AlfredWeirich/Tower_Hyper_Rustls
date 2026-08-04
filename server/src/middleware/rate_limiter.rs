@@ -31,6 +31,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode};
 use std::sync::Mutex;
 use tower::{Layer, Service};
+#[allow(unused_imports)]
 use tracing::{debug, info, trace, warn};
 
 // === Internal Modules ===

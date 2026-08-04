@@ -283,8 +283,13 @@ header_cert = "x-client-cert"
 header_san = "x-client-san"
 
 [Server.Layers]
-# enabled = ["Logger", "Cors","Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
-enabled = ["Logger", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+enabled = ["Logger", "SecurityHeaders", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+
+[Server.Layers.SecurityHeaders]
+content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+strict_transport_security = "max-age=63072000; includeSubDomains; preload"
+x_content_type_options = "nosniff"
+x_frame_options = "DENY"
 
 #[Server.Layers.Cors]
 #allowed_origins = ["https://admin.aweirich.eu", "http://localhost:3000"]

@@ -1,1 +1,21 @@
-RUST_LOG=info,proxy_server=info,proxy_server::middleware::logger=INFO cargo run -p proxy_server --release
+#!/bin/bash
+
+LOG_LEVEL="info"
+CARGO_ARGS=()
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --log-level|-l)
+            LOG_LEVEL="$2"
+            shift 2
+            ;;
+        *)
+            CARGO_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+LOG_LEVEL_UPPER=$(echo "$LOG_LEVEL" | tr '[:lower:]' '[:upper:]')
+
+RUST_LOG="${LOG_LEVEL},proxy_server=${LOG_LEVEL},proxy_server::middleware::logger=${LOG_LEVEL_UPPER}" cargo run -p proxy_server --release -- "${CARGO_ARGS[@]}"

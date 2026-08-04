@@ -140,6 +140,7 @@ Jeder Layer übernimmt eine spezifische Aufgabe im Anfrage-Lebenszyklus:
 | `"Logger"` | Protokolliert Details zu Request und Response (z.B. Pfad, Statuscode, IP). |
 | `"Inspection"` | Überprüft den URL-Pfad der Anfrage anhand einer Regex-Whitelist und blockiert unerlaubte Aufrufe. |
 | `"Cors"` | Fügt CORS-Header (Cross-Origin Resource Sharing) hinzu und behandelt Preflight-Anfragen. |
+| `"SecurityHeaders"` | Fügt HTTP-Sicherheits-Header (wie CSP, HSTS, Anti-Sniffing) zur Server-Antwort hinzu. |
 | `"Compression"` | Komprimiert die HTTP-Antworten (z. B. Gzip), um Bandbreite zu sparen. |
 | `"Decompression"` | Dekomprimiert den eingehenden Request-Body (inklusive Schutz vor "Decompression Bombs"). |
 | `"RateLimiter:Simple"` | Begrenzt die Anfragen pro Sekunde über ein hartes Limit (Fixed-Window Algorithmus). |
@@ -151,6 +152,15 @@ Jeder Layer übernimmt eine spezifische Aufgabe im Anfrage-Lebenszyklus:
 | `"AltSvc"` | Injiziert den `Alt-Svc`-Header in Antworten, um dem Client mitzuteilen, dass HTTP/3 (QUIC) verfügbar ist. |
 
 Zusätzliche Konfigurationsblöcke für spezifische Layer:
+
+#### `[Server.Layers.SecurityHeaders]`
+Definiert die Sicherheits-Header, die der Proxy an den Client schickt. 
+**Hinweis:** Wenn dieser Layer im `enabled` Array *fehlt*, fügt der Proxy ihn zu deinem Schutz vollautomatisch mit extrem strikten Standardwerten (z. B. `default-src 'none'`) ein! Möchtest du diese Werte überschreiben (z.B. für ein Dashboard), musst du den Layer explizit aktivieren und *alle* 4 Werte definieren. Fehlen Werte, startet der Server mit einer Fehlermeldung nicht.
+
+* `content_security_policy`: String. (z. B. `"default-src 'self'; script-src 'unsafe-inline'"`)
+* `strict_transport_security`: String. (z. B. `"max-age=63072000; includeSubDomains; preload"`)
+* `x_content_type_options`: String. (z. B. `"nosniff"`)
+* `x_frame_options`: String. (z. B. `"DENY"`)
 
 #### `[Server.Layers.Cors]`
 * `allowed_origins`: Array von Strings. Liste der erlaubten Origins (z.B. `["https://admin.aweirich.eu", "http://localhost:3000"]`). Setzen Sie `["*"]`, um alle zu erlauben.

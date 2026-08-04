@@ -115,7 +115,7 @@ where
         // Since server_name is &'static str, this copy is cheap and 'static-safe.
         let server_name = self.server_name;
 
-        tracing::info!("{}: Max Payload: {}", server_name, max_bytes);
+        tracing::debug!("{}: Max Payload: {}", server_name, max_bytes);
 
         // ── Stage 1: Header Check ────────────────────────────────────────
         if let Some(content_length) = req
@@ -143,7 +143,7 @@ where
 
         Box::pin(async move {
             let result = fut.await;
-            tracing::info!("{}: End Max Payload: {}", server_name, max_bytes);
+            tracing::debug!("{}: End Max Payload: {}", server_name, max_bytes);
 
             match result {
                 Ok(resp) => Ok(resp),

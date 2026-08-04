@@ -52,6 +52,8 @@ pub mod rate_limiter;
 pub mod router;
 /// Request timing / duration measurement.
 pub mod timing;
+/// Security Headers injection layer.
+pub mod security_headers;
 
 // ── Convenience re-exports ───────────────────────────────────────────────────
 
@@ -66,3 +68,4 @@ pub use logger::LoggerLayer;
 pub use rate_limiter::{SimpleRateLimiterLayer, TokenBucketRateLimiterLayer};
 pub use router::RouterService;
 pub use timing::TimingLayer;
+pub use security_headers::SecurityHeadersLayer;

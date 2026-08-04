@@ -84,7 +84,7 @@ use proxy_server::{
     middleware::{
         CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, LoggerLayer,
         MaxPayloadLayer, RouterService, SimpleRateLimiterLayer, TimingLayer,
-        TokenBucketRateLimiterLayer,
+        TokenBucketRateLimiterLayer, SecurityHeadersLayer,
         alt_svc::AltSvcLayer,
         compression::{SrvCompressionLayer, SrvDecompressionLayer},
     },
@@ -877,6 +877,9 @@ fn apply_layers(
                     (false, false, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(tower_http::cors::Any)),
                     (false, false, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(headers)),
                 }
+            }
+            MiddlewareLayer::SecurityHeaders(cfg) => {
+                SecurityHeadersLayer::new(cfg).layer(svc).boxed_clone()
             }
         })
 }

@@ -31,7 +31,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode};
 use std::sync::Mutex;
 use tower::{Layer, Service};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // === Internal Modules ===
 use crate::{ServiceRespBody, SrvError};
@@ -364,7 +364,7 @@ where
         let server_name = self.server_name;
 
         if try_consume {
-            info!(
+            debug!(
                 "{}: Token consumed (bucket limiter). Remaining: {}",
                 server_name, current_tokens
             );

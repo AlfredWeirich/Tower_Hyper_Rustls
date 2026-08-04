@@ -164,9 +164,6 @@ impl http_body::Body for H3Body {
 
 use hyper::header::HeaderValue;
 
-const HSTS_VALUE: HeaderValue = HeaderValue::from_static("max-age=63072000; includeSubDomains");
-const NOSNIFF_VALUE: HeaderValue = HeaderValue::from_static("nosniff");
-const CSP_VALUE: HeaderValue = HeaderValue::from_static("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:");
 const CACHE_CTL_VALUE: HeaderValue = HeaderValue::from_static("no-store");
 
 // ── Connection Handler ───────────────────────────────────────────────────────
@@ -323,11 +320,8 @@ impl ConnectionHandler {
     ///    check reads these roles later.
     /// 3. **Dispatch** – Forwards the enriched request to the inner service
     ///    stack and awaits its response.
-    /// 4. **Security headers** – Appends hardened response headers that must
+    /// 4. **Caching headers** – Appends headers that must
     ///    apply universally, regardless of upstream or middleware behavior:
-    ///    - `Strict-Transport-Security` (HSTS, 2 years)
-    ///    - `X-Content-Type-Options: nosniff`
-    ///    - `Content-Security-Policy: default-src 'none'`
     ///    - `Cache-Control: no-store`
     ///
     /// # Arguments
@@ -362,16 +356,8 @@ impl ConnectionHandler {
 
         let mut resp = self.inner_service.call(req).await?;
 
-        // === Security Response Headers (pre-computed, zero-parse overhead) ===
-        // headers.insert(
-        //     /*Tells browsers: "Don't embed this page in a frame, iframe, or object." ... */
-        //     hyper::header::X_FRAME_OPTIONS,
-        //     "DENY".parse().unwrap());
+        // === Universal Response Headers (pre-computed, zero-parse overhead) ===
         let headers = resp.headers_mut();
-        headers.reserve(4); // Pre-allocate space for 4 headers to avoid mapping reallocation
-        headers.insert(hyper::header::STRICT_TRANSPORT_SECURITY, HSTS_VALUE);
-        headers.insert(hyper::header::X_CONTENT_TYPE_OPTIONS, NOSNIFF_VALUE);
-        headers.insert(hyper::header::CONTENT_SECURITY_POLICY, CSP_VALUE);
         headers.insert(hyper::header::CACHE_CONTROL, CACHE_CTL_VALUE);
 
         Ok(resp)

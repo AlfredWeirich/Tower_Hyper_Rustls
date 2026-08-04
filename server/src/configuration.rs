@@ -454,6 +454,8 @@ pub enum MiddlewareLayer {
     AltSvc,
     /// Adds CORS headers to responses and handles preflight requests.
     Cors(CorsConfig),
+    /// Adds security headers to responses.
+    SecurityHeaders(SecurityHeadersConfig),
 }
 
 /// Rate limiter algorithm selection.
@@ -496,6 +498,9 @@ pub struct Layers {
     /// Configuration for the [`Cors`](MiddlewareLayer::Cors) layer.
     #[serde(rename = "Cors")]
     pub cors_config: Option<CorsConfig>,
+    /// Configuration for the [`SecurityHeaders`](MiddlewareLayer::SecurityHeaders) layer.
+    #[serde(rename = "SecurityHeaders")]
+    pub security_headers_config: Option<SecurityHeadersConfig>,
 }
 
 // --- Helper Structures for Configuration ---
@@ -617,6 +622,26 @@ pub struct CorsConfig {
     /// Whether credentials (cookies, auth headers) are allowed.
     #[serde(default)]
     pub allow_credentials: bool,
+}
+
+/// Configuration for the SecurityHeaders layer.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SecurityHeadersConfig {
+    pub content_security_policy: String,
+    pub strict_transport_security: String,
+    pub x_content_type_options: String,
+    pub x_frame_options: String,
+}
+
+impl Default for SecurityHeadersConfig {
+    fn default() -> Self {
+        Self {
+            content_security_policy: "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:".to_string(),
+            strict_transport_security: "max-age=63072000; includeSubDomains; preload".to_string(),
+            x_content_type_options: "nosniff".to_string(),
+            x_frame_options: "DENY".to_string(),
+        }
+    }
 }
 
 /// Raw deserialized allowed-path rules (per HTTP method).
@@ -1059,7 +1084,8 @@ impl Layers {
     /// Returns an error if an unknown layer name is encountered or if a required
     /// configuration section is absent.
     pub fn build_middleware_layers(&self) -> Result<Vec<MiddlewareLayer>, Error> {
-        self.enabled
+        let mut layers: Vec<MiddlewareLayer> = self
+            .enabled
             .iter()
             .map(|name| match name.as_str() {
                 // New case for MaxPayload
@@ -1098,6 +1124,11 @@ impl Layers {
                     .as_ref()
                     .map(|c| MiddlewareLayer::Cors(c.clone()))
                     .context("Missing [Layers.Cors]"),
+                "SecurityHeaders" => self
+                    .security_headers_config
+                    .as_ref()
+                    .map(|c| MiddlewareLayer::SecurityHeaders(c.clone()))
+                    .context("Layer 'SecurityHeaders' enabled but [Server.Layers.SecurityHeaders] section is missing"),
                 "RateLimiter:Simple" => self
                     .rate_limiter_config
                     .as_ref()
@@ -1111,7 +1142,15 @@ impl Layers {
                 "AltSvc" => Ok(MiddlewareLayer::AltSvc),
                 other => Err(Error::msg(format!("Unknown layer type: {}", other))),
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+            
+        // Fallback: If SecurityHeaders was not explicitly enabled in the list,
+        // we add it with standard strict defaults to protect the server.
+        if !self.enabled.iter().any(|n| n == "SecurityHeaders") {
+            layers.push(MiddlewareLayer::SecurityHeaders(SecurityHeadersConfig::default()));
+        }
+
+        Ok(layers)
     }
 }
 

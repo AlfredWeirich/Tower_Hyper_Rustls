@@ -79,37 +79,37 @@ pki_base_oid = "1.3.6.1.4.1.65111"
 
     # --- TLS: Server Identity (For HTTPS) ---
     [Server.server_certs]
-    # Path to the public certificate (or full chain) in PEM format.
-    ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
-    # Path to the unencrypted private key file in PEM format.
-    ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
+        # Path to the public certificate (or full chain) in PEM format.
+        ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
+        # Path to the unencrypted private key file in PEM format.
+        ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
 
     # --- TLS: Client Verification (For mTLS) ---
     # This is an array of tables. You can trust multiple Certificate Authorities.
     [[Server.client_certs]]
-    # Path to the CA certificate used to verify client certificates.
-    ssl_client_ca = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
-    # Optional: Path to a Certificate Revocation List (CRL).
-    ssl_client_crl = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.crl.pem"
+        # Path to the CA certificate used to verify client certificates.
+        ssl_client_ca = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
+        # Optional: Path to a Certificate Revocation List (CRL).
+        ssl_client_crl = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.crl.pem"
 
     # --- Client Certificate Forwarding ---
     [Server.client_cert_forwarding]
-    header_cert = "x-client-cert"
-    header_san = "x-client-san"
+        header_cert = "x-client-cert"
+        header_san = "x-client-san"
 
     # --- JWT Configuration ---
     # Required only if authentication = "JWT" or "JwtAuth" is in layers.
     [Server.Layers.JWT]
-    # LIST OF PATHS to public keys (PEM) used to verify JWT signatures.
-    jwt_public_keys = ["./jwt/public_key.pem"]
+        # LIST OF PATHS to public keys (PEM) used to verify JWT signatures.
+        jwt_public_keys = ["./jwt/public_key.pem"]
 
     # --- Concurrency Management ---
     [Server.Layers.ConcurrencyLimit]
-    # Maximum number of requests processed simultaneously by this server.
-    max_concurrent_requests = 64
+        # Maximum number of requests processed simultaneously by this server.
+        max_concurrent_requests = 64
 
     [Server.Layers.MaxPayload]
-    max_bytes = 10485760 # 10 MB Limit
+        max_bytes = 10485760 # 10 MB Limit
 
     # #########################################################################
     # --- Inspection Layer (Whitelist Regex) ---
@@ -121,38 +121,38 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     #"/name" = ["^/name\\??id=\\d+$"]      # Allows /name only with numeric ID
 
     [Server.AllowedPathes.POST]
-    "/chat.ChatService/GetConversations" = [".*"]
-    "/chat.ChatService/GetMessages" = [".*"]
-    "/chat.ChatService/SendMessage" = [".*"]
-    "/chat.ChatService/StreamMessages" = [".*"]
-    "/chat.ChatService/RegisterKeyPackage" = [".*"]
-    "/chat.ChatService/ClientLog" = [".*"]
-    "/chat.ChatService/GetDevices" = [".*"]
-    "/chat.ChatService/BlockDevice" = [".*"]
-    "/chat.ChatService/AddMember" = [".*"]
-    "/chat.ChatService/RemoveMember" = [".*"]
-    "/chat.ChatService/GetConversationMembers" = [".*"]
-    "/chat.ChatService/CreateConversation" = [".*"]
-    "/chat.ChatService/SearchUsers" = [".*"]
-    "/chat.ChatService/DeleteConversation" = [".*"]
-    "/chat.ChatService/MarkAsRead" = [".*"]
-    "/chat.ChatService/StreamGlobalEvents" = [".*"]
-    "/chat.ChatService/RegisterPushToken" = [".*"]
-    "/chat.ChatService/SendGlobalEvent" = [".*"]
-    "/chat.ChatService/GetRoomProducts" = [".*"]
-    "/chat.ChatService/DeleteRoomProduct" = [".*"]
-    "/chat.ChatService/GetCart" = [".*"]
-    "/chat.ChatService/AddToCart" = [".*"]
-    "/chat.ChatService/RemoveFromCart" = [".*"]
-    "/chat.ChatService/PlaceOrder" = [".*"]
-    "/chat.ChatService/GetMyOrders" = [".*"]
-    "/chat.ChatService/SubscribeOrderUpdates" = [".*"]
-    "/chat.ChatService/CreateRoomProduct" = [".*"]
-    "/chat.ChatService/CheckoutCart" = [".*"]
-    "/chat.ChatService/UpdateRoomProduct" = [".*"]
-    "/chat.ChatService/UpdateMemberRole" = [".*"]
-    "/chat.ChatService/GetOrders" = [".*"]
-    "/chat.ChatService/UpdateOrderStatus" = [".*"]
+        "/chat.ChatService/GetConversations" = [".*"]
+        "/chat.ChatService/GetMessages" = [".*"]
+        "/chat.ChatService/SendMessage" = [".*"]
+        "/chat.ChatService/StreamMessages" = [".*"]
+        "/chat.ChatService/RegisterKeyPackage" = [".*"]
+        "/chat.ChatService/ClientLog" = [".*"]
+        "/chat.ChatService/GetDevices" = [".*"]
+        "/chat.ChatService/BlockDevice" = [".*"]
+        "/chat.ChatService/AddMember" = [".*"]
+        "/chat.ChatService/RemoveMember" = [".*"]
+        "/chat.ChatService/GetConversationMembers" = [".*"]
+        "/chat.ChatService/CreateConversation" = [".*"]
+        "/chat.ChatService/SearchUsers" = [".*"]
+        "/chat.ChatService/DeleteConversation" = [".*"]
+        "/chat.ChatService/MarkAsRead" = [".*"]
+        "/chat.ChatService/StreamGlobalEvents" = [".*"]
+        "/chat.ChatService/RegisterPushToken" = [".*"]
+        "/chat.ChatService/SendGlobalEvent" = [".*"]
+        "/chat.ChatService/GetRoomProducts" = [".*"]
+        "/chat.ChatService/DeleteRoomProduct" = [".*"]
+        "/chat.ChatService/GetCart" = [".*"]
+        "/chat.ChatService/AddToCart" = [".*"]
+        "/chat.ChatService/RemoveFromCart" = [".*"]
+        "/chat.ChatService/PlaceOrder" = [".*"]
+        "/chat.ChatService/GetMyOrders" = [".*"]
+        "/chat.ChatService/SubscribeOrderUpdates" = [".*"]
+        "/chat.ChatService/CreateRoomProduct" = [".*"]
+        "/chat.ChatService/CheckoutCart" = [".*"]
+        "/chat.ChatService/UpdateRoomProduct" = [".*"]
+        "/chat.ChatService/UpdateMemberRole" = [".*"]
+        "/chat.ChatService/GetOrders" = [".*"]
+        "/chat.ChatService/UpdateOrderStatus" = [".*"]
 
 
 
@@ -174,258 +174,178 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     #   "Sticky": Hashes the incoming client's IP address (SocketAddr) to predictably route the exact same clients to the exact same backend servers every time (Session Affinity).
 
     [Server.ReverseRoutes."/"]
-    upstreams = ["https://127.0.0.1:50051"]
-    active_health_check_interval = 60
-    backend_type = "grpc_passthrough"
+        upstreams = ["https://127.0.0.1:50051"]
+        active_health_check_interval = 60
+        backend_type = "grpc_passthrough"
 
     # --- Upstream Connection Parameters ---
     [Server.RouterParams]
-    protocol = "https"
-    authentication = "ClientCert"
-    # The proxy will use this cert to authenticate against the backend's mTLS requirement.
-    ssl_client_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.pem"
-    ssl_client_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.key"
-    # The proxy will use this CA to verify the backend's identity.
-    ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
+        protocol = "https"
+        authentication = "ClientCert"
+        # The proxy will use this cert to authenticate against the backend's mTLS requirement.
+        ssl_client_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.pem"
+        ssl_client_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.key"
+        # The proxy will use this CA to verify the backend's identity.
+        ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
     # #########################################################################
 
 
     # --- Rate Limiting: Simple ---
     [Server.Layers.RateLimiter]
     # Strict maximum requests per second allowed for this server.
-    requests_per_second = 500000
+        requests_per_second = 500000
 
     # --- Rate Limiting: Token Bucket ---
     [Server.Layers.TokenBucketRateLimiter]
-    max_capacity = 15     # Maximum burst size (tokens)
-    refill = 8           # Number of tokens added per interval
-    duration_micros = 1000 # Refill interval in microseconds
+        max_capacity = 15     # Maximum burst size (tokens)
+        refill = 8           # Number of tokens added per interval
+        duration_micros = 1000 # Refill interval in microseconds
 
     # --- Artificial Latency ---
     [Server.Layers.Delay]
-    # Delays every request by this amount. Useful for debugging or throttling.
-    delay_micros = 1000000
+        # Delays every request by this amount. Useful for debugging or throttling.
+        delay_micros = 1000000
 
 
-#[[Server]]
 [[Server]]
 # =============================================================================
 # Onboarding Server (Public - no mTLS)
 # =============================================================================
-            name = "onboarding_server"
-            ip = "0.0.0.0"
-            port = 1337
-            protocol = "https"
-            service = "Router"
-            enabled = true
-            authentication = "None"
-
-            [Server.server_certs]
-            ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
-            ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
-
-            [Server.Layers]
-            enabled = ["MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
-
-            [Server.Layers.ConcurrencyLimit]
-            max_concurrent_requests = 128
-
-            [Server.Layers.MaxPayload]
-            max_bytes = 2000000 # 2 MB Limit (CSR requests are small)
-
-            [Server.Layers.TokenBucketRateLimiter]
-            max_capacity = 15     # Maximum burst size (tokens)
-            refill = 5           # Number of tokens added per interval
-            duration_micros = 1000000 # Refill interval in microseconds (1 second)
-
-            [Server.AllowedPathes.POST]
-            "/chat.OnboardingService/RequestOnboarding" = [".*"]
-            "/chat.OnboardingService/SubmitOnboarding" = [".*"]
-
-            [Server.ReverseRoutes."/"]
-            upstreams = ["https://127.0.0.1:50052"]
-            backend_type = "grpc_passthrough"
-
-            [Server.RouterParams]
-            protocol = "https"
-            authentication = "None"
-            ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
-
-            # V2 FIX: Zwingend erforderlich für Header-Sanitization auf dem Public Port!
-            # Obwohl dieser Port kein mTLS nutzt, sagt dieser Block dem Proxy, 
-            # welche Header gelöscht werden MÜSSEN, falls ein Hacker sie mitsendet.
-            [Server.client_cert_forwarding]
-            header_cert = "x-client-cert"
-            header_san = "x-client-san"
+    name = "onboarding_server"
+    ip = "0.0.0.0"
+    port = 1337
+    protocol = "https"
+    service = "Router"
+    enabled = true
+    authentication = "None
+    [Server.server_certs]
+        ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
+        ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
+    [Server.Layers]
+        enabled = ["MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"
+    [Server.Layers.ConcurrencyLimit]
+        max_concurrent_requests = 12
+    [Server.Layers.MaxPayload]
+        max_bytes = 2000000 # 2 MB Limit (CSR requests are small
+    [Server.Layers.TokenBucketRateLimiter]
+        max_capacity = 15     # Maximum burst size (tokens)
+        refill = 5           # Number of tokens added per interval
+        duration_micros = 1000000 # Refill interval in microseconds (1 second
+    [Server.AllowedPathes.POST]
+        "/chat.OnboardingService/RequestOnboarding" = [".*"]
+        "/chat.OnboardingService/SubmitOnboarding" = [".*"
+    [Server.ReverseRoutes."/"]
+        upstreams = ["https://127.0.0.1:50052"]
+        backend_type = "grpc_passthrough
+    [Server.RouterParams]
+        protocol = "https"
+        authentication = "None"
+        ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem
+    # V2 FIX: Zwingend erforderlich für Header-Sanitization auf dem Public Port!
+    # Obwohl dieser Port kein mTLS nutzt, sagt dieser Block dem Proxy, 
+    # welche Header gelöscht werden MÜSSEN, falls ein Hacker sie mitsendet.
+    [Server.client_cert_forwarding]
+        header_cert = "x-client-cert"
+        header_san = "x-client-san"
 
 [[Server]]
 # =============================================================================
 # Management & Admin Server (Port 1338 /admin & gRPC-Web)
 # =============================================================================
-name = "management_server"
-ip = "0.0.0.0"
-port = 1338
-protocol = "https"
-authentication = "ClientCert"
-service = "Router"
-enabled = true
-
-[Server.server_certs]
-ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
-ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
-
-[[Server.client_certs]]
-ssl_client_ca = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
-ssl_client_crl = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.crl.pem"
-
-[Server.client_cert_forwarding]
-header_cert = "x-client-cert"
-header_san = "x-client-san"
-
-[Server.Layers]
-#enabled = ["Logger", "SecurityHeaders", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
-enabled = ["Logger",  "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
-
-[Server.Layers.SecurityHeaders]
-content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
-strict_transport_security = "max-age=63072000; includeSubDomains; preload"
-x_content_type_options = "nosniff"
-x_frame_options = "DENY"
-
-#[Server.Layers.Cors]
-#allowed_origins = ["https://admin.aweirich.eu", "http://localhost:3000"]
-#allowed_methods = ["GET", "POST", "OPTIONS"]
-#allowed_headers = ["content-type", "authorization", "x-client-cert", "x-client-san"]
-#allow_credentials = true
-
-[Server.Layers.Decompression]
-max_decompressed_bytes = 10485760
-
-[Server.Layers.ConcurrencyLimit]
-max_concurrent_requests = 64
-
-[Server.Layers.MaxPayload]
-max_bytes = 10485760
-
-[Server.Layers.TokenBucketRateLimiter]
-max_capacity = 30
-refill = 10
-duration_micros = 1000000
-
-[Server.AllowedPathes.GET]
-"/" = [".*"]
-"/admin" = [".*"]
-"/admin/" = [".*"]
-"/admin/index.html" = [".*"]
-"/favicon.ico" = [".*"]
-# alternativ: "/*" = [".*"]
-
-[Server.AllowedPathes.POST]
-"/api/WhoAmI" = [".*"]
-"/api/GetUsers" = [".*"]
-"/api/GetAdminDevices" = [".*"]
-"/api/AdminBlockDevice" = [".*"]
-"/api/AdminUnblockDevice" = [".*"]
-"/api/AdminRemoveDevice" = [".*"]
-"/api/AdminCreateRoom" = [".*"]
-"/api/AdminAddSellerToRoom" = [".*"]
-"/api/AdminRemoveSellerFromRoom" = [".*"]
-"/api/GetAdminConversations" = [".*"]
-"/api/GetAdminOrders" = [".*"]
-"/api/AdminUpdateOrderStatus" = [".*"]
-"/api/GetDatabaseTables" = [".*"]
-"/api/GetTableContent" = [".*"]
-"/api/AdminAddProduct" = [".*"]
-"/api/AdminGetProducts" = [".*"]
-"/api/AdminDeleteProduct" = [".*"]
-"/api/AdminDeleteRoom" = [".*"]
-"/api/AdminAddUser" = [".*"]
-"/api/AdminDeleteUser" = [".*"]
-"/api/AdminGetMembers" = [".*"]
-"/api/AdminRemoveMember" = [".*"]
-"/api/AdminAddMember" = [".*"]
-"/api/AdminUpdateProductCreator" = [".*"]
-"/api/AdminCreateChannel" = [".*"]
-# alternativ "/api/*" = [".*"]
-
-[Server.ReverseRoutes."/"]
-upstreams = ["https://127.0.0.1:50053"]
-backend_type = "grpc_passthrough"
-allowed_roles = ["Admin", "Operator"]
-
-[Server.RouterParams]
-protocol = "https"
-authentication = "ClientCert"
-ssl_client_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.pem"
-ssl_client_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.key"
-ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
-
-
-#[[Server]]
-# =============================================================================
-# fourth Server
-# =============================================================================
-            #name = "fourth_server"
-            #ip = "192.168.178.23"
-            #port = 1339
-            #protocol = "https"
-            #service = "Echo"
-            #enabled = true
-            #authentication = "None"
-
-            # [[Server.client_certs]]
-            # ssl_client_ca = "./client_certs/ca.cert.pem"
-
-            #[Server.server_certs]
-            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
-
-            #[Server.Layers]
-            # Keeping layers empty for maximum throughput on the backend.
-            # enabled = ["Logger"]
-
-#[[Server]]
-# =============================================================================
-# fifth Server
-# =============================================================================
-            #name = "fifth_server"
-            #ip = "192.168.178.23"
-            #port = 1340
-            #protocol = "https"
-            #service = "Echo"
-            #enabled = true
-            #authentication = "None"
-
-            # [[Server.client_certs]]
-            # ssl_client_ca = "./client_certs/ca.cert.pem"
-
-            #[Server.server_certs]
-            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
-
-            #[Server.Layers]
-            # Keeping layers empty for maximum throughput on the backend.
-            # enabled = ["Logger"]
-
-#[[Server]]
-# =============================================================================
-# sixth Server
-# =============================================================================
-            #name = "sixth_server"
-            #ip = "192.168.178.23"
-            #port = 1341
-            #protocol = "https"
-            #service = "Echo"
-            #enabled = true
-            #authentication = "None"
-
-            # [[Server.client_certs]]
-            # ssl_client_ca = "./client_certs/ca.cert.pem"
-
-            #[Server.server_certs]
-            #ssl_certificate = "./server_certs/self_signed/fullchain_self.pem"
-            #ssl_certificate_key = "./server_certs/self_signed/privkey_self.pem"
-
-            #[Server.Layers]
-            # Keeping layers empty for maximum throughput on the backend.
-            # enabled = ["Logger"]
+    name = "management_server"
+    ip = "0.0.0.0"
+    port = 1338
+    protocol = "https"
+    authentication = "ClientCert"
+    service = "Router"
+    enabled = true
+    
+    [Server.server_certs]
+        ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"
+        ssl_certificate_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/privkey12.pem"
+    
+    [[Server.client_certs]]
+        ssl_client_ca = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"
+        ssl_client_crl = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.crl.pem"
+    
+    [Server.client_cert_forwarding]
+        header_cert = "x-client-cert"
+        header_san = "x-client-san"
+    
+    [Server.Layers]
+        #enabled = ["Logger", "SecurityHeaders", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+        enabled = ["Logger",  "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+    
+    [Server.Layers.SecurityHeaders]
+        content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+        strict_transport_security = "max-age=63072000; includeSubDomains; preload"
+        x_content_type_options = "nosniff"
+        x_frame_options = "DENY"
+    
+    #[Server.Layers.Cors]
+        #allowed_origins = ["https://admin.aweirich.eu", "http://localhost:3000"]
+        #allowed_methods = ["GET", "POST", "OPTIONS"]
+        #allowed_headers = ["content-type", "authorization", "x-client-cert", "x-client-san"]
+        #allow_credentials = true
+    
+    [Server.Layers.Decompression]
+        max_decompressed_bytes = 10485760
+    
+    [Server.Layers.ConcurrencyLimit]
+        max_concurrent_requests = 64
+    
+    [Server.Layers.MaxPayload]
+        max_bytes = 10485760
+    
+    [Server.Layers.TokenBucketRateLimiter]
+        max_capacity = 30
+        refill = 10
+        duration_micros = 1000000
+    
+    [Server.AllowedPathes.GET]
+        "/" = [".*"]
+        "/admin" = [".*"]
+        "/admin/" = [".*"]
+        "/admin/index.html" = [".*"]
+        "/favicon.ico" = [".*"]
+        # alternativ: "/*" = [".*"]
+    
+    [Server.AllowedPathes.POST]
+        "/api/WhoAmI" = [".*"]
+        "/api/GetUsers" = [".*"]
+        "/api/GetAdminDevices" = [".*"]
+        "/api/AdminBlockDevice" = [".*"]
+        "/api/AdminUnblockDevice" = [".*"]
+        "/api/AdminRemoveDevice" = [".*"]
+        "/api/AdminCreateRoom" = [".*"]
+        "/api/AdminAddSellerToRoom" = [".*"]
+        "/api/AdminRemoveSellerFromRoom" = [".*"]
+        "/api/GetAdminConversations" = [".*"]
+        "/api/GetAdminOrders" = [".*"]
+        "/api/AdminUpdateOrderStatus" = [".*"]
+        "/api/GetDatabaseTables" = [".*"]
+        "/api/GetTableContent" = [".*"]
+        "/api/AdminAddProduct" = [".*"]
+        "/api/AdminGetProducts" = [".*"]
+        "/api/AdminDeleteProduct" = [".*"]
+        "/api/AdminDeleteRoom" = [".*"]
+        "/api/AdminAddUser" = [".*"]
+        "/api/AdminDeleteUser" = [".*"]
+        "/api/AdminGetMembers" = [".*"]
+        "/api/AdminRemoveMember" = [".*"]
+        "/api/AdminAddMember" = [".*"]
+        "/api/AdminUpdateProductCreator" = [".*"]
+        "/api/AdminCreateChannel" = [".*"]
+        # alternativ "/api/*" = [".*"]
+    
+    [Server.ReverseRoutes."/"]
+        upstreams = ["https://127.0.0.1:50053"]
+        backend_type = "grpc_passthrough"
+        allowed_roles = ["Admin", "Operator"]
+    
+    [Server.RouterParams]
+        protocol = "https"
+        authentication = "ClientCert"
+        ssl_client_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.pem"
+        ssl_client_key = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/proxy-client.key"
+        ssl_root_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/ca.pem"

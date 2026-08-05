@@ -13,13 +13,6 @@ tokio_threads = 50
 # Private Enterprise Number (PEN)
 pki_base_oid = "1.3.6.1.4.1.65111"
 
-[oid_mapping]
-# Maps OID suffixes found in certificates/JWTs to internal application roles.
-# Format: "suffix" = "RoleName" (Roles: Admin, Operator, Viewer, Guest, ...)
-"1" = "Admin"
-"2" = "Operator"
-"3" = "Viewer"
-"4" = "Guest"
 
 # Directory path for persistent log files.
 # If commented out or omitted, the application will only log to Standard Output (stdout).
@@ -268,6 +261,14 @@ protocol = "https"
 authentication = "ClientCert"
 service = "Router"
 enabled = true
+
+[Server.oid_mapping]
+# Maps OID suffixes found in certificates/JWTs to internal application roles.
+# Format: "suffix" = "RoleName" (Roles: Admin, Operator, Viewer, Guest, ...)
+"1" = "Admin"
+"2" = "Seller"
+
+
 
 [Server.server_certs]
 ssl_certificate = "/Users/fredi/Data/Projekte/Rust/ios_test/260501_ChatApp/rust_core/certs/fullchain12.pem"

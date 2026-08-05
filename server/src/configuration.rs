@@ -43,17 +43,15 @@ static CONFIG: OnceLock<ArcSwap<Config>> = OnceLock::new();
 ///
 /// The variant names match the TOML configuration (PascalCase) thanks to
 /// `#[serde(rename_all = "PascalCase")]`.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
-#[serde(rename_all = "PascalCase")]
-pub enum UserRole {
-    /// Full access to all administrative endpoints.
-    Admin,
-    /// Partial access to operational endpoints.
-    Operator,
-    /// Read-only access to standard endpoints.
-    Viewer,
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct UserRole(pub String);
+
+impl UserRole {
     /// Default role for unidentified or low-privileged clients.
-    Guest,
+    pub fn guest() -> Self {
+        Self("Guest".to_string())
+    }
 }
 
 /// The transport protocol for a server instance.
@@ -114,10 +112,7 @@ pub struct Config {
     /// The base OID prefix for custom PKI extensions
     /// (e.g. `"2.25"` for UUID-based OIDs).
     pub pki_base_oid: Option<String>,
-    /// Map of specific OID suffixes to [`UserRole`] variants for RBAC.
-    /// Example: `{"1" = "Admin", "2" = "Viewer"}`.
-    #[serde(default)]
-    pub oid_mapping: HashMap<String, UserRole>,
+
     /// Pre-parsed integer representation of [`pki_base_oid`](Config::pki_base_oid).
     /// Computed in [`Config::init`] for fast OID prefix matching in
     /// [`extract_oids_from_cert`](crate::tls_conf::extract_oids_from_cert).
@@ -161,6 +156,11 @@ pub struct ServerConfig {
     /// Authentication method (None, JWT, or ClientCert/mTLS).
     #[serde(default)]
     pub authentication: AuthenticationMethod,
+
+    /// Map of specific OID suffixes to [`UserRole`] variants for RBAC on this server.
+    /// Example: `{"1" = "Admin", "2" = "Viewer"}`.
+    #[serde(default)]
+    pub oid_mapping: HashMap<String, UserRole>,
 
     /// Server TLS certificate and key paths (required for HTTPS).
     pub server_certs: Option<ServerCertConfig>,
@@ -762,18 +762,6 @@ impl Config {
             .expect("Configuration not initialized - check if Config::init was called in main")
             .load_full()
     }
-
-    /// Maps a client-provided OID suffix to an internal [`UserRole`].
-    ///
-    /// Falls back to [`UserRole::Guest`] if the suffix is not in the
-    /// [`oid_mapping`](Config::oid_mapping) table.
-    pub fn map_oid_to_role(&self, suffix: &str) -> UserRole {
-        // suffix is for example "1" or "2"
-        self.oid_mapping
-            .get(suffix)
-            .copied()
-            .unwrap_or(UserRole::Guest)
-    }
 }
 
 impl ServerConfig {
@@ -1151,6 +1139,21 @@ impl Layers {
         }
 
         Ok(layers)
+    }
+}
+
+// --- ServerConfig Methods ---
+
+impl ServerConfig {
+    /// Maps a client-provided OID suffix to an internal [`UserRole`].
+    ///
+    /// Falls back to `UserRole::guest()` if the suffix is not in the
+    /// [`oid_mapping`](ServerConfig::oid_mapping) table.
+    pub fn map_oid_to_role(&self, suffix: &str) -> UserRole {
+        self.oid_mapping
+            .get(suffix)
+            .cloned()
+            .unwrap_or_else(UserRole::guest)
     }
 }
 

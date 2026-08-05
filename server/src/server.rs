@@ -74,7 +74,7 @@ use tracing_appender::{non_blocking::WorkerGuard, rolling::RollingFileAppender};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 // === Internal Modules ===
-use proxy_server::configuration::UserRole;
+
 use proxy_server::{
     BoxedCloneService, ConnectionHandler,
     configuration::{
@@ -347,6 +347,8 @@ async fn start_single_server(
     );
 
     // === HTTPS / DUAL STACK PATH ===
+    let oid_mapping = Arc::new(server_config.oid_mapping.clone());
+
     if server_config.protocol == Protocol::Https {
         let tls_config: RustlsServerConfig = match build_rustls_config(server_config.as_ref()) {
             Ok(cfg) => cfg,
@@ -362,6 +364,7 @@ async fn start_single_server(
             dynamic_stack,
             cancel_token,
             server_config.static_name.expect("missing static_name"),
+            oid_mapping,
         )
         .await
         {
@@ -389,8 +392,9 @@ async fn start_single_server(
                         Ok((stream, peer_addr)) => {
                             let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack per connection
                             let conn_token = cancel_token.clone();
+                            let oid_mapping = oid_mapping.clone();
                             tokio::spawn(async move {
-                                let handler = ConnectionHandler::new(svc, peer_addr, Vec::new(), None, None);
+                                let handler = ConnectionHandler::new(svc, peer_addr, Vec::new(), None, None, oid_mapping);
                                 let mut builder = auto::Builder::new(TokioExecutor::new());
                                 // Timeout: drop clients that take too long to send HTTP/1 headers
                                 builder.http1()
@@ -770,6 +774,7 @@ fn build_service_stack(server_config: &Arc<ServerConfig>) -> Result<BoxedCloneSe
         server_config.static_name.expect("static_name missing"),
         compiled_allowed_pathes.clone(),
         server_config.port,
+        Arc::new(server_config.oid_mapping.clone()),
     ))
 }
 
@@ -796,6 +801,7 @@ fn apply_layers(
     server_name: &'static str,
     compiled_allowed_pathes: Arc<CompiledAllowedPathes>,
     server_port: u16, // <--- Add this argument
+    oid_mapping: Arc<std::collections::HashMap<String, proxy_server::configuration::UserRole>>,
 ) -> BoxedCloneService {
     layers
         .into_iter()
@@ -814,7 +820,7 @@ fn apply_layers(
                     .layer(svc)
                     .boxed_clone()
             }
-            MiddlewareLayer::JwtAuth(keys) => JwtAuthLayer::new(keys, server_name)
+            MiddlewareLayer::JwtAuth(keys) => JwtAuthLayer::new(keys, server_name, oid_mapping.clone())
                 .layer(svc)
                 .boxed_clone(),
             MiddlewareLayer::RateLimiter(proxy_server::configuration::RateLimiter::Simple(cfg)) => {
@@ -900,6 +906,7 @@ pub async fn run_dual_stack(
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
+    oid_mapping: Arc<std::collections::HashMap<String, proxy_server::configuration::UserRole>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let arc_tls_config = Arc::new(tls_config);
 
@@ -914,6 +921,7 @@ pub async fn run_dual_stack(
         dynamic_stack.clone(),
         tcp_cancel_token,
         server_name,
+        oid_mapping.clone(),
     );
 
     // 2. UDP Listener (HTTP/3)
@@ -923,6 +931,7 @@ pub async fn run_dual_stack(
         dynamic_stack,
         udp_cancel_token,
         server_name,
+        oid_mapping,
     );
 
     // Wait for both listeners to finish (shutdown signal)
@@ -944,6 +953,7 @@ async fn run_tcp_listener(
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
+    oid_mapping: Arc<std::collections::HashMap<String, proxy_server::configuration::UserRole>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tcp_listener = TcpListener::bind(server_addr).await?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
@@ -960,6 +970,7 @@ async fn run_tcp_listener(
                         let _ = stream.set_nodelay(true);
                         let acceptor = acceptor.clone();
                         let dynamic_stack = dynamic_stack.clone();
+                        let oid_mapping = oid_mapping.clone();
                         tokio::spawn(async move {
                             trace!("{}: TCP Connection accepted", server_name);
                             // Timeout: abort TLS handshakes that stall (Slowloris protection)
@@ -987,7 +998,7 @@ async fn run_tcp_listener(
 
                                     let svc = dynamic_stack.lock().unwrap().clone(); // fresh stack
                                     // Use the standard constructor which wraps Vec in Arc
-                                    let handler = ConnectionHandler::new(svc, peer_addr, client_oids, client_cert_pem, client_cert_san);
+                                    let handler = ConnectionHandler::new(svc, peer_addr, client_oids, client_cert_pem, client_cert_san, oid_mapping.clone());
 
                                     let mut builder = auto::Builder::new(TokioExecutor::new());
                                     // Timeout: drop clients that take too long to send HTTP/1 headers
@@ -1040,6 +1051,7 @@ async fn run_udp_listener(
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     cancel_token: CancellationToken,
     server_name: &'static str,
+    oid_mapping: Arc<std::collections::HashMap<String, proxy_server::configuration::UserRole>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Determine if we need to modify the TLS config for QUIC (ALPN)
     // Quinn expects explicit "h3" ALPN
@@ -1078,9 +1090,10 @@ async fn run_udp_listener(
                     if let Some(conn) = res {
                         trace!("{}: UDP Connection accepted", server_name);
                         let dynamic_stack = dynamic_stack.clone();
+                        let oid_mapping = oid_mapping.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_h3_connection(conn, dynamic_stack, server_name).await {
+                            if let Err(e) = handle_h3_connection(conn, dynamic_stack, server_name, oid_mapping).await {
                                 error!("{}: H3 Connection Error: {:?}", server_name, e);
                             }
                         });
@@ -1109,6 +1122,7 @@ async fn handle_h3_connection(
     connecting: quinn::Incoming,
     dynamic_stack: Arc<Mutex<BoxedCloneService>>,
     #[allow(unused_variables)] server_name: &str,
+    oid_mapping: Arc<std::collections::HashMap<String, proxy_server::configuration::UserRole>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Establish QUIC connection
     let connection = connecting.await?;
@@ -1134,15 +1148,14 @@ async fn handle_h3_connection(
 
     // --- OPTIMIZATION START ---
     // Convert OIDs (Strings) to Roles (Enums) ONCE for the whole connection.
-    let config = Config::global();
-    let mut roles: Vec<UserRole> = oids
+    let mut roles: Vec<proxy_server::configuration::UserRole> = oids
         .iter()
-        .map(|oid| config.map_oid_to_role(oid))
-        .filter(|role| *role != UserRole::Guest)
+        .map(|oid| oid_mapping.get(oid).cloned().unwrap_or_else(proxy_server::configuration::UserRole::guest))
+        .filter(|role| *role != proxy_server::configuration::UserRole::guest())
         .collect();
 
     if roles.is_empty() {
-        roles.push(UserRole::Guest);
+        roles.push(proxy_server::configuration::UserRole::guest());
     }
 
     // Wrap the ROLES in Arc, not the OIDs.

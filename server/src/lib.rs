@@ -251,18 +251,18 @@ impl ConnectionHandler {
         oids: Vec<String>,
         client_cert_pem: Option<String>,
         client_cert_san: Option<String>,
+        oid_mapping: Arc<std::collections::HashMap<String, UserRole>>,
     ) -> Self {
         // 1. Perform the expensive mapping ONCE per connection
-        let config = crate::configuration::Config::global();
         let roles: Vec<UserRole> = oids
             .iter()
-            .map(|oid| config.map_oid_to_role(oid))
-            .filter(|role| *role != UserRole::Guest)
+            .map(|oid| oid_mapping.get(oid).cloned().unwrap_or_else(UserRole::guest))
+            .filter(|role| *role != UserRole::guest())
             .collect();
 
         // If you need Guest as fallback, handle it here
         let final_roles = if roles.is_empty() {
-            vec![UserRole::Guest]
+            vec![UserRole::guest()]
         } else {
             roles
         };

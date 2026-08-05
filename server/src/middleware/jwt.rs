@@ -53,6 +53,8 @@ pub struct JwtAuthLayer {
     decoding_keys: Arc<Vec<DecodingKey>>,
     /// Server name label for tracing/logging.
     server_name: &'static str,
+    /// Server-specific OID mapping.
+    oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>,
 }
 
 impl JwtAuthLayer {
@@ -61,13 +63,13 @@ impl JwtAuthLayer {
     /// # Arguments
     /// * `key_files` - A list of paths to PEM-encoded public keys used for token verification.
     /// * `server_name` - A static string identifying the server for logging purposes.
-    #[allow(dead_code)]
-    pub fn new(key_files: Vec<String>, server_name: &'static str) -> Self {
+    pub fn new(key_files: Vec<String>, server_name: &'static str, oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>) -> Self {
         let decoding_keys = load_decoding_keys(&key_files);
 
         Self {
             decoding_keys: Arc::new(decoding_keys),
             server_name,
+            oid_mapping,
         }
     }
 }
@@ -78,8 +80,9 @@ impl<S> Layer<S> for JwtAuthLayer {
     fn layer(&self, inner: S) -> Self::Service {
         JwtAuthService {
             inner,
-            decoding_keys: self.decoding_keys.clone(),
+            decoding_keys: Arc::clone(&self.decoding_keys),
             server_name: self.server_name,
+            oid_mapping: Arc::clone(&self.oid_mapping),
         }
     }
 }
@@ -97,8 +100,10 @@ pub struct JwtAuthService<S> {
     inner: S,
     /// Arc-shared list of decoding keys for signature verification.
     decoding_keys: Arc<Vec<DecodingKey>>,
-    /// Server name label for tracing/logging.
+    /// Server name for logging contexts.
     server_name: &'static str,
+    /// Server-specific OID mapping.
+    oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>,
 }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for JwtAuthService<S>
@@ -139,6 +144,7 @@ where
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let decoding_keys = &self.decoding_keys;
         let server_name = self.server_name;
+        let oid_mapping = self.oid_mapping.clone();
         tracing::trace!("{}: Processing JWT Authentication", server_name);
 
         // Extract the token from the "Authorization: Bearer <token>" header.
@@ -156,19 +162,17 @@ where
                     // Expert Note: We map custom OIDs (extracted from the JWT) to internal UserRoles.
                     // This allows the rest of the application to work with strongly-typed roles
                     // instead of raw OID strings.
-                    let config = crate::configuration::Config::global();
-
                     let mut roles: Vec<crate::configuration::UserRole> = claims
                         .oids
                         .iter()
-                        .map(|suffix| config.map_oid_to_role(suffix))
+                        .map(|suffix| oid_mapping.get(suffix).cloned().unwrap_or_else(crate::configuration::UserRole::guest))
                         // Filter out Guest initially to determine if we have higher-privileged roles.
-                        .filter(|role| *role != crate::configuration::UserRole::Guest)
+                        .filter(|role| *role != crate::configuration::UserRole::guest())
                         .collect();
 
                     // Default to Guest if no specific roles were identified.
                     if roles.is_empty() {
-                        roles.push(crate::configuration::UserRole::Guest);
+                        roles.push(crate::configuration::UserRole::guest());
                     }
 
                     tracing::trace!("{}: JWT Roles mapped: {:?}", server_name, roles);
@@ -177,7 +181,7 @@ where
                     // for downstream middleware and handlers to consume.
                     req.extensions_mut().insert::<Claims>(claims);
                     req.extensions_mut()
-                        .insert::<Vec<crate::configuration::UserRole>>(roles);
+                        .insert::<Arc<Vec<crate::configuration::UserRole>>>(Arc::new(roles));
 
                     let fut = self.inner.call(req);
                     Box::pin(async move { fut.await })

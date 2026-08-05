@@ -26,36 +26,7 @@ Diese Parameter befinden sich auf der obersten Ebene der Datei und beeinflussen 
 | `pki_base_oid` | String | Die Basis-OID (Object Identifier) zur Sicherheitsvalidierung. Dient als Wurzel für die Interpretation von Zertifikatserweiterungen (Private Enterprise Number). | **Beispiel:** `"1.3.6.1.4.1.65111"` |
 | `log_dir` | String | Verzeichnispfad für persistente Log-Dateien. Wenn auskommentiert oder nicht vorhanden, wird nur auf die Standardausgabe (`stdout`) geloggt. | **Beispiel:** `"log"` |
 
-### `[oid_mapping]`
-Ordnet OID-Suffixe, die bei der Authentifizierung (mTLS oder JWT) gefunden werden, internen Rollen (`UserRole`) zu. Dies ist die Grundlage für die rollenbasierte Zugriffskontrolle (RBAC) des Proxys.
-
-**Wie kommen die OIDs in die Anfrage?**
-1. **Bei mTLS (Client-Zertifikate):** Die OIDs werden als benutzerdefinierte X.509-Erweiterungen (Custom Extensions) in das Client-Zertifikat eingebettet. Der Server sucht nach Erweiterungen, die mit der `pki_base_oid` beginnen. Der Rest der OID (das Suffix) wird extrahiert. *Beispiel:* Ist die Base-OID `1.3.6.1.4.1.65111` und das Zertifikat enthält die OID `1.3.6.1.4.1.65111.1`, wird das Suffix `"1"` ausgelesen.
-2. **Bei JWT (JSON Web Tokens):** Der Payload des JWT enthält ein Array-Feld namens `oids` (z. B. `"oids": ["1", "2"]`). Diese Strings werden direkt als Suffixe interpretiert.
-
-**Was bewirken sie bei der Ausführung?**
-1. **Mapping:** Während der Anfrageverarbeitung werden die gefundenen Suffixe anhand dieser Tabelle in stark typisierte Rollen übersetzt. Fehlt das Suffix in der Tabelle (oder fehlt die OID komplett), wird der Client automatisch auf die Rolle `"Guest"` zurückgestuft.
-2. **Routing & Autorisierung:** Der Proxy (`RouterService`) gleicht die zugewiesenen Rollen mit den `allowed_roles` ab, die bei den jeweiligen Reverse-Proxy-Routen konfiguriert sind. Nur wenn der Request eine zugelassene Rolle besitzt, wird die Anfrage an das Backend weitergeleitet. Andernfalls wird der Zugriff verweigert (HTTP 401/403).
-
-* **Format:** `"Suffix" = "Rolle"`
-  
-  **Beispiel in der `Config.toml`:**
-  ```toml
-  [oid_mapping]
-  # Mapping der OID-Suffixe auf interne Rollen
-  "1" = "Admin"
-  "2" = "Operator"
-  "3" = "Viewer"
-  "4" = "Guest"
-  ```
-
-* **Mögliche Rollen:**
-  * `"Admin"`: Voller Zugriff auf administrative Endpunkte.
-  * `"Operator"`: Eingeschränkter Zugriff auf operative Endpunkte.
-  * `"Viewer"`: Nur-Lese-Zugriff.
-  * `"Guest"`: Standardrolle für unidentifizierte Clients oder Fallback, wenn keine gültige OID vorliegt.
-
-#### Client-Zertifikate mit OIDs generieren
+### Client-Zertifikate mit OIDs generieren
 Um selbst gültige Client-Zertifikate für Test- oder Produktionszwecke zu erstellen, liegt dem Projekt das Skript [`client_certs/generate_mtls_oid_certs.sh`](file:///Users/fredi/Data/Projekte/Rust/260225_Tower_Hyper_Rustls_refactor_client_gprc/client_certs/generate_mtls_oid_certs.sh) bei.
 
 **Verwendung des Skripts**
@@ -102,6 +73,19 @@ Sie können mehrere `[[Server]]`-Blöcke definieren, um mehrere Listener gleichz
 | `protocol` | String | Transportprotokoll. (Bei `https` muss `[Server.server_certs]` konfiguriert werden). | `"http"`, `"https"` (**Standard:** `"http"`) |
 | `authentication` | String | Authentifizierungsmethode für eingehende Verbindungen. | `"None"` (Öffentlich)<br>`"ClientCert"` oder `"mTLS"` (Zertifikatsbasiert)<br>`"JWT"` (Tokenbasiert) |
 | `service` | String | Der Basisservice, der die Anfrage nach der Middleware verarbeitet. | `"Echo"` (Gibt Anfrage zurück)<br>`"Router"` (Reverse-Proxy) |
+
+### Server.oid_mapping
+Definiert **pro Server**, wie die aus Zertifikaten oder JWT-Tokens extrahierten OID-Endungen (Object Identifiers) auf interne Berechtigungsrollen (Roles) abgebildet werden.
+Da dies nun auf Server-Ebene konfiguriert wird, können dieselben Zertifikats-IDs (z.B. "1") je nach Server völlig unterschiedliche Bedeutungen haben.
+
+**Beispiel:**
+```toml
+[Server.oid_mapping]
+"1" = "Admin"
+"2" = "Seller"
+"3" = "Viewer"
+```
+Erklärung: Wenn ein Client-Zertifikat die OID `1.3.6.1.4.1.65111.1` besitzt (wobei `1.3.6.1.4.1.65111` die `pki_base_oid` aus der globalen Config ist), wird dem Nutzer die Rolle `Admin` zugewiesen. Es sind beliebige Rollennamen als String möglich.
 
 ### Zertifikatskonfigurationen (TLS & mTLS)
 

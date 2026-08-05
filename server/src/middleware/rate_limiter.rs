@@ -145,20 +145,20 @@ where
     /// is explicitly dropped before calling the inner service, preventing
     /// lock contention during downstream processing.
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let allowed = {
+        let rate_limited = {
             let mut state = self.state.lock().unwrap();
             let now = Instant::now();
-            let allowed = now < state.next_allowed;
-            if allowed {
-                // Update the next allowed instant
+            let rate_limited = now < state.next_allowed;
+            if !rate_limited {
+                // Update the next allowed instant since we allow this request
                 state.next_allowed = now + self.limit_duration;
             }
-            allowed
+            rate_limited
         };
 
         let server_name = self.server_name;
 
-        if allowed {
+        if rate_limited {
             warn!("{}: Too Many Requests (simple limiter)", server_name);
             let body: ServiceRespBody = Full::new(Bytes::from_static(b"Too Many Requests"))
                 .map_err(SrvError::from)

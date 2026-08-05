@@ -18,4 +18,4 @@ done
 
 LOG_LEVEL_UPPER=$(echo "$LOG_LEVEL" | tr '[:lower:]' '[:upper:]')
 
-RUST_LOG="${LOG_LEVEL},proxy_server=${LOG_LEVEL},proxy_server::middleware::logger=${LOG_LEVEL_UPPER}" cargo run -p proxy_server --release -- "${CARGO_ARGS[@]}"
+RUST_LOG="warn,proxy_server=${LOG_LEVEL},proxy_server::middleware::logger=${LOG_LEVEL_UPPER}" cargo run -p proxy_server --release -- "${CARGO_ARGS[@]}"

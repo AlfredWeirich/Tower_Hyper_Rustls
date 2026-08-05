@@ -355,7 +355,7 @@ x_frame_options = "DENY"
 [Server.ReverseRoutes."/"]
 upstreams = ["https://127.0.0.1:50053"]
 backend_type = "grpc_passthrough"
-allowed_roles = ["Admin", "Operator"]
+allowed_roles = ["Admin", "Seller"]
 
 [Server.RouterParams]
 protocol = "https"

@@ -283,7 +283,8 @@ header_cert = "x-client-cert"
 header_san = "x-client-san"
 
 [Server.Layers]
-enabled = ["Logger", "SecurityHeaders", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+#enabled = ["Logger", "SecurityHeaders", "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
+enabled = ["Logger",  "Decompression", "MaxPayload", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
 
 [Server.Layers.SecurityHeaders]
 content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
@@ -325,6 +326,7 @@ duration_micros = 1000000
 "/api/GetAdminDevices" = [".*"]
 "/api/AdminBlockDevice" = [".*"]
 "/api/AdminUnblockDevice" = [".*"]
+"/api/AdminRemoveDevice" = [".*"]
 "/api/AdminCreateRoom" = [".*"]
 "/api/AdminAddSellerToRoom" = [".*"]
 "/api/AdminRemoveSellerFromRoom" = [".*"]

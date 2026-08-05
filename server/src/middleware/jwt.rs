@@ -53,8 +53,8 @@ pub struct JwtAuthLayer {
     decoding_keys: Arc<Vec<DecodingKey>>,
     /// Server name label for tracing/logging.
     server_name: &'static str,
-    /// Server-specific OID mapping.
-    oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>,
+    /// Server-specific OID mapping (stored as a Vec for fast linear search of small maps).
+    oid_mapping: Arc<Vec<(String, crate::configuration::UserRole)>>,
 }
 
 impl JwtAuthLayer {
@@ -63,13 +63,19 @@ impl JwtAuthLayer {
     /// # Arguments
     /// * `key_files` - A list of paths to PEM-encoded public keys used for token verification.
     /// * `server_name` - A static string identifying the server for logging purposes.
-    pub fn new(key_files: Vec<String>, server_name: &'static str, oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>) -> Self {
+    pub fn new(key_files: Vec<String>, server_name: &'static str, oid_mapping_hash: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>) -> Self {
         let decoding_keys = load_decoding_keys(&key_files);
+        
+        // Convert HashMap to Vec for faster linear search (avoids SipHash overhead on small sets)
+        let oid_mapping: Vec<_> = oid_mapping_hash
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         Self {
             decoding_keys: Arc::new(decoding_keys),
             server_name,
-            oid_mapping,
+            oid_mapping: Arc::new(oid_mapping),
         }
     }
 }
@@ -102,8 +108,8 @@ pub struct JwtAuthService<S> {
     decoding_keys: Arc<Vec<DecodingKey>>,
     /// Server name for logging contexts.
     server_name: &'static str,
-    /// Server-specific OID mapping.
-    oid_mapping: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>,
+    /// Server-specific OID mapping (stored as a Vec for fast linear search).
+    oid_mapping: Arc<Vec<(String, crate::configuration::UserRole)>>,
 }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for JwtAuthService<S>
@@ -141,10 +147,10 @@ where
     /// Returns **401 Unauthorized** if:
     /// * The `Authorization` header is missing.
     /// * The token cannot be verified by any of the configured keys.
-    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        let decoding_keys = &self.decoding_keys;
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+        let decoding_keys = Arc::clone(&self.decoding_keys);
         let server_name = self.server_name;
-        let oid_mapping = self.oid_mapping.clone();
+        let oid_mapping = Arc::clone(&self.oid_mapping);
         tracing::trace!("{}: Processing JWT Authentication", server_name);
 
         // Extract the token from the "Authorization: Bearer <token>" header.
@@ -153,49 +159,65 @@ where
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
-            .map(str::trim);
+            .map(|s| s.trim().to_string());
 
-        match token {
-            Some(token_str) => match verify_jwt(token_str, decoding_keys) {
-                Ok(claims) => {
-                    // --- Role Mapping Logic ---
-                    // Expert Note: We map custom OIDs (extracted from the JWT) to internal UserRoles.
-                    // This allows the rest of the application to work with strongly-typed roles
-                    // instead of raw OID strings.
-                    let mut roles: Vec<crate::configuration::UserRole> = claims
-                        .oids
-                        .iter()
-                        .map(|suffix| oid_mapping.get(suffix).cloned().unwrap_or_else(crate::configuration::UserRole::guest))
-                        // Filter out Guest initially to determine if we have higher-privileged roles.
-                        .filter(|role| *role != crate::configuration::UserRole::guest())
-                        .collect();
+        let mut inner = self.inner.clone();
 
-                    // Default to Guest if no specific roles were identified.
-                    if roles.is_empty() {
-                        roles.push(crate::configuration::UserRole::guest());
+        Box::pin(async move {
+            match token {
+                Some(token_str) => {
+                    let claims_result = tokio::task::spawn_blocking(move || {
+                        verify_jwt(&token_str, &decoding_keys)
+                    })
+                    .await;
+
+                    let claims = match claims_result {
+                        Ok(Ok(c)) => Ok(c),
+                        Ok(Err(e)) => Err(format!("{:?}", e)),
+                        Err(e) => Err(format!("Task error: {}", e)),
+                    };
+
+                    match claims {
+                        Ok(claims) => {
+                            // --- Role Mapping Logic ---
+                            let mut roles: Vec<crate::configuration::UserRole> = claims
+                                .oids
+                                .iter()
+                                .map(|suffix| {
+                                    oid_mapping
+                                        .iter()
+                                        .find(|(k, _)| k == suffix)
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_else(crate::configuration::UserRole::guest)
+                                })
+                                .filter(|role| *role != crate::configuration::UserRole::guest())
+                                .collect();
+
+                            if roles.is_empty() {
+                                roles.push(crate::configuration::UserRole::guest());
+                            }
+
+                            tracing::trace!("{}: JWT Roles mapped: {:?}", server_name, roles);
+
+                            let mut req = req;
+                            req.extensions_mut().insert::<Claims>(claims);
+                            req.extensions_mut()
+                                .insert::<Arc<Vec<crate::configuration::UserRole>>>(Arc::new(roles));
+
+                            inner.call(req).await
+                        }
+                        Err(e) => {
+                            error!("{}: Invalid JWT: {}", server_name, e);
+                            unauthorized_response()
+                        }
                     }
-
-                    tracing::trace!("{}: JWT Roles mapped: {:?}", server_name, roles);
-
-                    // Inject both the raw claims and the mapped roles into request extensions
-                    // for downstream middleware and handlers to consume.
-                    req.extensions_mut().insert::<Claims>(claims);
-                    req.extensions_mut()
-                        .insert::<Arc<Vec<crate::configuration::UserRole>>>(Arc::new(roles));
-
-                    let fut = self.inner.call(req);
-                    Box::pin(async move { fut.await })
                 }
-                Err(e) => {
-                    error!("{}: Invalid JWT: {:?}", server_name, e);
-                    Box::pin(async move { unauthorized_response() })
+                None => {
+                    error!("{}: Missing Authorization header", server_name);
+                    unauthorized_response()
                 }
-            },
-            None => {
-                error!("{}: Missing Authorization header", server_name);
-                Box::pin(async move { unauthorized_response() })
             }
-        }
+        })
     }
 }
 

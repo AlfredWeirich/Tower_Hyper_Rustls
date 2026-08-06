@@ -1499,9 +1499,13 @@ fn setup_tracing(config: &proxy_server::configuration::Config) -> Result<Option<
         let provider = opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(jaeger_endpoint))
-            .with_trace_config(opentelemetry_sdk::trace::Config::default().with_resource(
-                Resource::new(vec![KeyValue::new("service.name", "proxy_server")]),
-            ))
+            .with_trace_config(
+                opentelemetry_sdk::trace::Config::default()
+                    .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(0.5))))
+                    .with_resource(Resource::new(vec![
+                        KeyValue::new("service.name", "proxy_server")
+                    ])),
+            )
             .install_batch(opentelemetry_sdk::runtime::Tokio)
             .expect("Failed to initialize OTLP tracer");
 

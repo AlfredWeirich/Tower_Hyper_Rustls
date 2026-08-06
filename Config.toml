@@ -6,7 +6,7 @@
 # The number of worker threads for the Tokio async runtime.
 # Default: (Available CPU Cores * 2). 
 # Manual override is useful for high-performance tuning on dedicated hardware.
-tokio_threads = 50
+# tokio_threads = 50
 
 # Enable or disable background OpenTelemetry Tracing (Jaeger)
 # If false, TraceLayer is silently skipped and no background export tasks are started.

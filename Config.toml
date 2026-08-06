@@ -101,9 +101,9 @@ pki_base_oid = "1.3.6.1.4.1.65111"
     # LIST OF PATHS to public keys (PEM) used to verify JWT signatures.
     jwt_public_keys = ["./jwt/public_key.pem"]
 
+    # --- Concurrency Management ---
     [Server.Layers.ConcurrencyLimit]
     # Maximum number of requests processed simultaneously by this server.
-    # Set to a high value (e.g. 10000) because gRPC streams occupy one slot each.
     max_concurrent_requests = 10000
 
     [Server.Layers.MaxPayload]
@@ -225,7 +225,7 @@ pki_base_oid = "1.3.6.1.4.1.65111"
             enabled = ["MaxPayload", "Logger", "Inspection", "RateLimiter:TokenBucket", "ConcurrencyLimit"]
 
             [Server.Layers.ConcurrencyLimit]
-            max_concurrent_requests = 10000
+            max_concurrent_requests = 128
 
             [Server.Layers.MaxPayload]
             max_bytes = 2000000 # 2 MB Limit (CSR requests are small)

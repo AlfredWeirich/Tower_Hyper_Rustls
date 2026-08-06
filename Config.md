@@ -38,6 +38,10 @@ Dieser Block steuert die OpenTelemetry (OTLP) Tracing-Einstellungen für Jaeger 
 | `jaeger_endpoint` | String | Die URL des OTLP-kompatiblen Tracing-Kollektors (z.B. Jaeger). | **Standard:** `"http://localhost:4317"` |
 | `otel_log_level` | String | Das Log-Level der Telemetrie-Events, die an den Kollektor gesendet werden. Filtert interne Logs aus. | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` (**Standard:** `"info"`) |
 
+Jäger wird gestartet mit
+jaeger-1.60.0-darwin-arm64/jaeger-all-in-one --collector.otlp.enabled=true
+Die Ergebnisse sind einsehbar: http://localhost:16686/
+
 ### Client-Zertifikate mit OIDs generieren
 Um selbst gültige Client-Zertifikate für Test- oder Produktionszwecke zu erstellen, liegt dem Projekt das Skript [`client_certs/generate_mtls_oid_certs.sh`](file:///Users/fredi/Data/Projekte/Rust/260225_Tower_Hyper_Rustls_refactor_client_gprc/client_certs/generate_mtls_oid_certs.sh) bei.
 

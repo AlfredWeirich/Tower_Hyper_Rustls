@@ -246,8 +246,8 @@ impl ConnectionHandler {
     /// 2. Filter out [`UserRole::Guest`] (the default/fallback role).
     /// 3. If no meaningful roles remain, fall back to `[UserRole::Guest]`.
     pub fn new(
-        service: BoxedCloneService, 
-        addr: SocketAddr, 
+        service: BoxedCloneService,
+        addr: SocketAddr,
         oids: Vec<String>,
         client_cert_pem: Option<String>,
         client_cert_san: Option<String>,
@@ -256,7 +256,12 @@ impl ConnectionHandler {
         // 1. Perform the expensive mapping ONCE per connection
         let roles: Vec<UserRole> = oids
             .iter()
-            .map(|oid| oid_mapping.get(oid).cloned().unwrap_or_else(UserRole::guest))
+            .map(|oid| {
+                oid_mapping
+                    .get(oid)
+                    .cloned()
+                    .unwrap_or_else(UserRole::guest)
+            })
             .filter(|role| *role != UserRole::guest())
             .collect();
 

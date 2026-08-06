@@ -26,6 +26,18 @@ Diese Parameter befinden sich auf der obersten Ebene der Datei und beeinflussen 
 | `pki_base_oid` | String | Die Basis-OID (Object Identifier) zur Sicherheitsvalidierung. Dient als Wurzel für die Interpretation von Zertifikatserweiterungen (Private Enterprise Number). | **Beispiel:** `"1.3.6.1.4.1.65111"` |
 | `log_dir` | String | Verzeichnispfad für persistente Log-Dateien. Wenn auskommentiert oder nicht vorhanden, wird nur auf die Standardausgabe (`stdout`) geloggt. | **Beispiel:** `"log"` |
 
+---
+
+## Telemetrie (`[telemetry]`)
+
+Dieser Block steuert die OpenTelemetry (OTLP) Tracing-Einstellungen für Jaeger oder andere Tracing-Backends.
+
+| Parameter | Datentyp | Beschreibung | Mögliche Werte / Standardwert |
+| :--- | :--- | :--- | :--- |
+| `enable_opentelemetry` | Boolean | Aktiviert oder deaktiviert den Export von Spans an einen OTLP-Kollektor. | `true`, `false` (**Standard:** `true`) |
+| `jaeger_endpoint` | String | Die URL des OTLP-kompatiblen Tracing-Kollektors (z.B. Jaeger). | **Standard:** `"http://localhost:4317"` |
+| `otel_log_level` | String | Das Log-Level der Telemetrie-Events, die an den Kollektor gesendet werden. Filtert interne Logs aus. | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` (**Standard:** `"info"`) |
+
 ### Client-Zertifikate mit OIDs generieren
 Um selbst gültige Client-Zertifikate für Test- oder Produktionszwecke zu erstellen, liegt dem Projekt das Skript [`client_certs/generate_mtls_oid_certs.sh`](file:///Users/fredi/Data/Projekte/Rust/260225_Tower_Hyper_Rustls_refactor_client_gprc/client_certs/generate_mtls_oid_certs.sh) bei.
 

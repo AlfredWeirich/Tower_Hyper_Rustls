@@ -143,14 +143,20 @@ where
             match &response {
                 Ok(res) => {
                     let status = res.status();
-                    
-                    let is_cors_preflight_failed = req_method == hyper::Method::OPTIONS 
-                        && req_origin.is_some() 
+
+                    let is_cors_preflight_failed = req_method == hyper::Method::OPTIONS
+                        && req_origin.is_some()
                         && status == hyper::StatusCode::OK
-                        && res.headers().get(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none();
+                        && res
+                            .headers()
+                            .get(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                            .is_none();
 
                     if is_cors_preflight_failed {
-                        let origin_str = req_origin.as_ref().and_then(|h| h.to_str().ok()).unwrap_or("unknown");
+                        let origin_str = req_origin
+                            .as_ref()
+                            .and_then(|h| h.to_str().ok())
+                            .unwrap_or("unknown");
                         tracing::warn!(
                             "{}: !! CORS Preflight Blocked: Origin '{}' is not allowed",
                             server_name,

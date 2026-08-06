@@ -1,8 +1,8 @@
-use hyper::{header, Response, StatusCode};
+use hyper::{Response, StatusCode, header};
 use tracing::warn;
 
-use crate::{ServiceRespBody, configuration::ServerConfig};
 use super::build_error_response;
+use crate::{ServiceRespBody, configuration::ServerConfig};
 
 /// HTTP hop-by-hop headers that **must not** be forwarded by a proxy.
 static HOP_BY_HOP_HEADERS: [header::HeaderName; 9] = [
@@ -96,19 +96,25 @@ pub fn prepare_proxy_headers(
             if let Some(san) = extensions.get::<crate::SanCertExtension>() {
                 tracing::trace!("Found SanCertExtension with value: '{}'", san.0);
                 match header::HeaderValue::from_str(&san.0) {
-                    Ok(hdr_val) => {
-                        match header::HeaderName::from_bytes(header_san.as_bytes()) {
-                            Ok(hdr_name) => {
-                                tracing::trace!("SUCCESS! Injecting SAN into header: {}", hdr_name);
-                                original_headers.insert(hdr_name, hdr_val);
-                            },
-                            Err(e) => tracing::warn!("FAILED to parse HeaderName from config '{}': {}", header_san, e),
+                    Ok(hdr_val) => match header::HeaderName::from_bytes(header_san.as_bytes()) {
+                        Ok(hdr_name) => {
+                            tracing::trace!("SUCCESS! Injecting SAN into header: {}", hdr_name);
+                            original_headers.insert(hdr_name, hdr_val);
                         }
+                        Err(e) => tracing::warn!(
+                            "FAILED to parse HeaderName from config '{}': {}",
+                            header_san,
+                            e
+                        ),
                     },
-                    Err(e) => tracing::warn!("FAILED to parse HeaderValue from SAN '{}': {}", san.0, e),
+                    Err(e) => {
+                        tracing::warn!("FAILED to parse HeaderValue from SAN '{}': {}", san.0, e)
+                    }
                 }
             } else {
-                tracing::trace!("extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions.");
+                tracing::trace!(
+                    "extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions."
+                );
             }
         }
     } else {

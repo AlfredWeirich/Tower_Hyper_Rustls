@@ -1,3 +1,6 @@
+use hyper::header::{
+    CONTENT_SECURITY_POLICY, HeaderValue, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
+};
 use hyper::{Request, Response};
 use std::{
     future::Future,
@@ -5,7 +8,6 @@ use std::{
     task::{Context, Poll},
 };
 use tower::{Layer, Service};
-use hyper::header::{HeaderValue, CONTENT_SECURITY_POLICY, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS};
 
 use crate::configuration::SecurityHeadersConfig;
 
@@ -62,7 +64,7 @@ where
         Box::pin(async move {
             let mut response = inner.call(req).await?;
             let headers = response.headers_mut();
-            
+
             if let Ok(csp) = HeaderValue::from_str(&config.content_security_policy) {
                 headers.insert(CONTENT_SECURITY_POLICY, csp);
             }
@@ -73,7 +75,10 @@ where
                 headers.insert(X_CONTENT_TYPE_OPTIONS, nosniff);
             }
             if let Ok(xframe) = HeaderValue::from_str(&config.x_frame_options) {
-                headers.insert(hyper::header::HeaderName::from_static("x-frame-options"), xframe);
+                headers.insert(
+                    hyper::header::HeaderName::from_static("x-frame-options"),
+                    xframe,
+                );
             }
 
             Ok(response)

@@ -86,9 +86,17 @@ impl RouterService {
             };
 
             if let Err(e) = router.insert(&wildcard_path, route_data.clone()) {
-                warn!("{}: Failed to insert wildcard route {}: {}", config.name, wildcard_path, e);
+                warn!(
+                    "{}: Failed to insert wildcard route {}: {}",
+                    config.name, wildcard_path, e
+                );
             } else {
-                tracing::debug!("{}: Registered route: {} and {}", config.name, prefix, wildcard_path);
+                tracing::debug!(
+                    "{}: Registered route: {} and {}",
+                    config.name,
+                    prefix,
+                    wildcard_path
+                );
             }
         }
         let router = Arc::new(router);
@@ -205,7 +213,12 @@ impl Service<Request<SrvBody>> for RouterService {
             let matched = match router.at(path) {
                 Ok(m) => m,
                 Err(e) => {
-                    tracing::warn!("{}: Route not found for path '{}', error: {:?}", server_name, path, e);
+                    tracing::warn!(
+                        "{}: Route not found for path '{}', error: {:?}",
+                        server_name,
+                        path,
+                        e
+                    );
                     return Ok(build_error_response("Not Found", StatusCode::NOT_FOUND));
                 }
             };
@@ -216,9 +229,15 @@ impl Service<Request<SrvBody>> for RouterService {
             }
 
             let original_method = parts.method;
-            let mut prepared_headers = parts.headers; 
+            let mut prepared_headers = parts.headers;
 
-            if let Err(err_resp) = headers::prepare_proxy_headers(&mut prepared_headers, server_name, jwt_token.as_ref(), &parts.extensions, &self_clone.config) {
+            if let Err(err_resp) = headers::prepare_proxy_headers(
+                &mut prepared_headers,
+                server_name,
+                jwt_token.as_ref(),
+                &parts.extensions,
+                &self_clone.config,
+            ) {
                 return Ok(err_resp);
             }
 
@@ -230,7 +249,8 @@ impl Service<Request<SrvBody>> for RouterService {
 
             let is_transcoding = route_info.backend_type == RouteBackendType::GrpcTranscoding;
             let is_passthrough = route_info.backend_type == RouteBackendType::GrpcPassthrough;
-            let can_stream = (route_info.target.max_retries == 0 || is_passthrough) && !is_transcoding;
+            let can_stream =
+                (route_info.target.max_retries == 0 || is_passthrough) && !is_transcoding;
 
             let request_body = if can_stream {
                 RequestBody::Stream(body)
@@ -257,7 +277,8 @@ impl Service<Request<SrvBody>> for RouterService {
                         server_name,
                         &grpc_client,
                         &self_clone.config,
-                    ).await
+                    )
+                    .await
                 }
                 RouteBackendType::GrpcPassthrough => {
                     grpc_passthrough::handle_grpc_passthrough(
@@ -270,7 +291,8 @@ impl Service<Request<SrvBody>> for RouterService {
                         client_addr,
                         server_name,
                         &grpc_client,
-                    ).await
+                    )
+                    .await
                 }
                 RouteBackendType::Rest => {
                     http_proxy::handle_http_proxy(
@@ -284,7 +306,8 @@ impl Service<Request<SrvBody>> for RouterService {
                         client_addr,
                         server_name,
                         &client,
-                    ).await
+                    )
+                    .await
                 }
             }
         })

@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use hyper::{Method, Request, Response, StatusCode, header, Uri};
-use hyper_util::client::legacy::Client;
-use tracing::{error, warn};
 use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request, Response, StatusCode, Uri, header};
+use hyper_util::client::legacy::Client;
+use std::sync::Arc;
+use tracing::{error, warn};
 
-use crate::{ServiceRespBody, SrvError, configuration::ParsedRoute};
 use super::upstreams::build_upstream_uri;
-use super::{build_error_response, RequestBody};
+use super::{RequestBody, build_error_response};
+use crate::{ServiceRespBody, SrvError, configuration::ParsedRoute};
 
 pub async fn handle_grpc_passthrough(
     route_info: &ParsedRoute,
@@ -17,7 +17,10 @@ pub async fn handle_grpc_passthrough(
     matched_params: &matchit::Params<'_, '_>,
     client_addr: Option<std::net::SocketAddr>,
     server_name: &str,
-    grpc_client: &Client<common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, ServiceRespBody>,
+    grpc_client: &Client<
+        common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        ServiceRespBody,
+    >,
 ) -> Result<Response<ServiceRespBody>, SrvError> {
     let mut failed_nodes = Vec::new();
     let max_retries = route_info.target.max_retries;
@@ -31,9 +34,13 @@ pub async fn handle_grpc_passthrough(
         };
         attempts += 1;
 
-        let upstream_node = route_info.target.next_upstream(client_addr.as_ref(), &failed_nodes);
+        let upstream_node = route_info
+            .target
+            .next_upstream(client_addr.as_ref(), &failed_nodes);
         let backend_base_uri = &upstream_node.uri;
-        upstream_node.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        upstream_node
+            .active_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         struct ConnectionGuard {
             target: Arc<crate::configuration::RouteTarget>,
@@ -42,9 +49,12 @@ pub async fn handle_grpc_passthrough(
         impl Drop for ConnectionGuard {
             fn drop(&mut self) {
                 if let Some(node) = self.target.upstreams.iter().find(|n| n.uri == self.uri) {
-                    let current = node.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                    let current = node
+                        .active_connections
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     if current > 0 {
-                        node.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        node.active_connections
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -81,16 +91,28 @@ pub async fn handle_grpc_passthrough(
         let mut proxy_req = Request::new(boxed_body);
         *proxy_req.method_mut() = original_method.clone();
         *proxy_req.uri_mut() = target_uri;
-        
+
         *proxy_req.version_mut() = hyper::Version::HTTP_2;
         // Strip hop-by-hop headers that hyper's HTTP/2 client strictly rejects
         current_headers.remove(hyper::header::CONNECTION);
         current_headers.remove(hyper::header::TRANSFER_ENCODING);
         current_headers.remove(hyper::header::UPGRADE);
         current_headers.remove(hyper::header::TE); // TE is allowed in HTTP/2 only if it is "trailers"
-        current_headers.insert(hyper::header::TE, hyper::header::HeaderValue::from_static("trailers"));
-        
+        current_headers.insert(
+            hyper::header::TE,
+            hyper::header::HeaderValue::from_static("trailers"),
+        );
+
         *proxy_req.headers_mut() = current_headers;
+
+        // Inject OpenTelemetry context (e.g., traceparent) into the outgoing request headers.
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut opentelemetry_http::HeaderInjector(proxy_req.headers_mut()),
+            );
+        });
 
         match grpc_client.request(proxy_req).await {
             Ok(res) => {
@@ -101,15 +123,24 @@ pub async fn handle_grpc_passthrough(
                 ));
             }
             Err(e) => {
-                error!("{}: Backend connection failed to {}: {}", server_name, backend_base_uri, e);
+                error!(
+                    "{}: Backend connection failed to {}: {}",
+                    server_name, backend_base_uri, e
+                );
                 route_info.target.mark_dead(backend_base_uri);
                 failed_nodes.push(backend_base_uri.clone());
 
                 if attempts <= max_retries {
-                    warn!("{}: Retrying request... (Attempt {}/{})", server_name, attempts, max_retries);
+                    warn!(
+                        "{}: Retrying request... (Attempt {}/{})",
+                        server_name, attempts, max_retries
+                    );
                     continue;
                 } else {
-                    error!("{}: Max retries reached. Returning 502 Bad Gateway.", server_name);
+                    error!(
+                        "{}: Max retries reached. Returning 502 Bad Gateway.",
+                        server_name
+                    );
                     return Ok(build_error_response("Bad Gateway", StatusCode::BAD_GATEWAY));
                 }
             }

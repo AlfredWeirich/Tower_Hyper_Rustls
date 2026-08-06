@@ -63,9 +63,13 @@ impl JwtAuthLayer {
     /// # Arguments
     /// * `key_files` - A list of paths to PEM-encoded public keys used for token verification.
     /// * `server_name` - A static string identifying the server for logging purposes.
-    pub fn new(key_files: Vec<String>, server_name: &'static str, oid_mapping_hash: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>) -> Self {
+    pub fn new(
+        key_files: Vec<String>,
+        server_name: &'static str,
+        oid_mapping_hash: Arc<std::collections::HashMap<String, crate::configuration::UserRole>>,
+    ) -> Self {
         let decoding_keys = load_decoding_keys(&key_files);
-        
+
         // Convert HashMap to Vec for faster linear search (avoids SipHash overhead on small sets)
         let oid_mapping: Vec<_> = oid_mapping_hash
             .iter()
@@ -166,10 +170,9 @@ where
         Box::pin(async move {
             match token {
                 Some(token_str) => {
-                    let claims_result = tokio::task::spawn_blocking(move || {
-                        verify_jwt(&token_str, &decoding_keys)
-                    })
-                    .await;
+                    let claims_result =
+                        tokio::task::spawn_blocking(move || verify_jwt(&token_str, &decoding_keys))
+                            .await;
 
                     let claims = match claims_result {
                         Ok(Ok(c)) => Ok(c),
@@ -202,7 +205,9 @@ where
                             let mut req = req;
                             req.extensions_mut().insert::<Claims>(claims);
                             req.extensions_mut()
-                                .insert::<Arc<Vec<crate::configuration::UserRole>>>(Arc::new(roles));
+                                .insert::<Arc<Vec<crate::configuration::UserRole>>>(Arc::new(
+                                    roles,
+                                ));
 
                             inner.call(req).await
                         }

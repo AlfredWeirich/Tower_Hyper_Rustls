@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
-use hyper::{Method, Request, Response, StatusCode, header, Uri};
+use hyper::{Method, Request, Response, StatusCode, Uri, header};
 use hyper_util::client::legacy::Client;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde::de::DeserializeSeed;
+use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic_reflection::pb::v1alpha::{
     ServerReflectionRequest, server_reflection_client::ServerReflectionClient,
@@ -13,8 +13,11 @@ use tonic_reflection::pb::v1alpha::{
 };
 use tracing::{error, warn};
 
-use crate::{ServiceRespBody, SrvError, configuration::{ParsedRoute, ServerConfig}};
-use super::{build_error_response, RequestBody};
+use super::{RequestBody, build_error_response};
+use crate::{
+    ServiceRespBody, SrvError,
+    configuration::{ParsedRoute, ServerConfig},
+};
 
 pub async fn handle_grpc_web(
     route_info: &ParsedRoute,
@@ -24,7 +27,10 @@ pub async fn handle_grpc_web(
     original_uri: &Uri,
     client_addr: Option<std::net::SocketAddr>,
     server_name: &str,
-    grpc_client: &Client<common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, ServiceRespBody>,
+    grpc_client: &Client<
+        common::client::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        ServiceRespBody,
+    >,
     config: &ServerConfig,
 ) -> Result<Response<ServiceRespBody>, SrvError> {
     let mut failed_nodes = Vec::new();
@@ -39,9 +45,13 @@ pub async fn handle_grpc_web(
         };
         attempts += 1;
 
-        let upstream_node = route_info.target.next_upstream(client_addr.as_ref(), &failed_nodes);
+        let upstream_node = route_info
+            .target
+            .next_upstream(client_addr.as_ref(), &failed_nodes);
         let backend_base_uri = &upstream_node.uri;
-        upstream_node.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        upstream_node
+            .active_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         struct ConnectionGuard {
             target: Arc<crate::configuration::RouteTarget>,
@@ -50,9 +60,12 @@ pub async fn handle_grpc_web(
         impl Drop for ConnectionGuard {
             fn drop(&mut self) {
                 if let Some(node) = self.target.upstreams.iter().find(|n| n.uri == self.uri) {
-                    let current = node.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                    let current = node
+                        .active_connections
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     if current > 0 {
-                        node.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        node.active_connections
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -86,8 +99,14 @@ pub async fn handle_grpc_web(
                             p
                         }
                         Err(e) => {
-                            error!("{}: Failed to fetch gRPC reflection schema: {:?}", server_name, e);
-                            return Ok(build_error_response("Failed to fetch gRPC schema", StatusCode::BAD_GATEWAY));
+                            error!(
+                                "{}: Failed to fetch gRPC reflection schema: {:?}",
+                                server_name, e
+                            );
+                            return Ok(build_error_response(
+                                "Failed to fetch gRPC schema",
+                                StatusCode::BAD_GATEWAY,
+                            ));
                         }
                     }
                 }
@@ -96,12 +115,18 @@ pub async fn handle_grpc_web(
 
         let uri_path = original_uri.path().trim_start_matches('/');
         let uri_parts: Vec<&str> = uri_path.split('/').collect();
-        
+
         if original_method != Method::POST || uri_parts.len() < 2 {
-            warn!("{}: Invalid gRPC request method or path structure", server_name);
-            return Ok(build_error_response("Please use POST /Fully.Qualified.Service/Method for gRPC", StatusCode::BAD_REQUEST));
+            warn!(
+                "{}: Invalid gRPC request method or path structure",
+                server_name
+            );
+            return Ok(build_error_response(
+                "Please use POST /Fully.Qualified.Service/Method for gRPC",
+                StatusCode::BAD_REQUEST,
+            ));
         }
-        
+
         let service_name = uri_parts[uri_parts.len() - 2];
         let method_name = uri_parts[uri_parts.len() - 1];
 
@@ -109,29 +134,44 @@ pub async fn handle_grpc_web(
             Some(s) => match s.methods().find(|m| m.name() == method_name) {
                 Some(m) => m,
                 None => {
-                    return Ok(build_error_response("gRPC Method Not Found", StatusCode::NOT_FOUND));
+                    return Ok(build_error_response(
+                        "gRPC Method Not Found",
+                        StatusCode::NOT_FOUND,
+                    ));
                 }
             },
             None => {
-                return Ok(build_error_response("gRPC Service Not Found", StatusCode::NOT_FOUND));
+                return Ok(build_error_response(
+                    "gRPC Service Not Found",
+                    StatusCode::NOT_FOUND,
+                ));
             }
         };
 
         let RequestBody::Buffered(req_body_bytes) = &request_body else {
-            return Ok(build_error_response("Streaming not supported for gRPC transcoding yet", StatusCode::INTERNAL_SERVER_ERROR));
+            return Ok(build_error_response(
+                "Streaming not supported for gRPC transcoding yet",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
         };
-        
+
         let mut deserializer = serde_json::Deserializer::from_slice(req_body_bytes);
         let dynamic_req_msg = match method_desc.input().deserialize(&mut deserializer) {
             Ok(msg) => msg,
             Err(e) => {
-                return Ok(build_error_response(&format!("Invalid JSON payload: {}", e), StatusCode::BAD_REQUEST));
+                return Ok(build_error_response(
+                    &format!("Invalid JSON payload: {}", e),
+                    StatusCode::BAD_REQUEST,
+                ));
             }
         };
 
         let mut protobuf_payload = BytesMut::new();
         if let Err(e) = dynamic_req_msg.encode(&mut protobuf_payload) {
-            return Ok(build_error_response(&format!("Encode error: {}", e), StatusCode::INTERNAL_SERVER_ERROR));
+            return Ok(build_error_response(
+                &format!("Encode error: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
         }
 
         let mut grpc_frame = BytesMut::with_capacity(5 + protobuf_payload.len());
@@ -139,11 +179,14 @@ pub async fn handle_grpc_web(
         grpc_frame.put_u32(protobuf_payload.len() as u32);
         grpc_frame.put_slice(&protobuf_payload);
 
-        let boxed_body: ServiceRespBody = Full::new(grpc_frame.freeze()).map_err(SrvError::from).boxed();
+        let boxed_body: ServiceRespBody = Full::new(grpc_frame.freeze())
+            .map_err(SrvError::from)
+            .boxed();
 
         let grpc_target_path = format!("/{}/{}", service_name, method_name);
         let mut proxy_uri_parts = backend_base_uri.clone().into_parts();
-        proxy_uri_parts.path_and_query = Some(hyper::http::uri::PathAndQuery::from_maybe_shared(grpc_target_path).unwrap());
+        proxy_uri_parts.path_and_query =
+            Some(hyper::http::uri::PathAndQuery::from_maybe_shared(grpc_target_path).unwrap());
         let final_target_uri = Uri::from_parts(proxy_uri_parts).unwrap();
 
         let mut builder = Request::builder()
@@ -157,62 +200,106 @@ pub async fn handle_grpc_web(
             builder = builder.header(header::AUTHORIZATION, auth.clone());
         }
 
-        let proxy_req = match builder.body(boxed_body) {
+        let mut proxy_req = match builder.body(boxed_body) {
             Ok(req) => req,
             Err(e) => {
-                return Ok(build_error_response(&format!("Failed to build gRPC request: {}", e), StatusCode::INTERNAL_SERVER_ERROR));
+                return Ok(build_error_response(
+                    &format!("Failed to build gRPC request: {}", e),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ));
             }
         };
+
+        *proxy_req.version_mut() = hyper::Version::HTTP_2;
+        *proxy_req.headers_mut() = current_headers;
+
+        // Inject OpenTelemetry context (e.g., traceparent) into the outgoing request headers.
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut opentelemetry_http::HeaderInjector(proxy_req.headers_mut()),
+            );
+        });
 
         match grpc_client.request(proxy_req).await {
             Ok(mut res) => {
                 if res.status() != StatusCode::OK {
-                    return Ok(build_error_response(&format!("Backend Error: {}", res.status()), res.status()));
+                    return Ok(build_error_response(
+                        &format!("Backend Error: {}", res.status()),
+                        res.status(),
+                    ));
                 }
 
                 let res_body_bytes = match res.body_mut().collect().await {
                     Ok(c) => c.to_bytes(),
                     Err(e) => {
-                        return Ok(build_error_response(&format!("Failed to read gRPC body: {}", e), StatusCode::BAD_GATEWAY));
+                        return Ok(build_error_response(
+                            &format!("Failed to read gRPC body: {}", e),
+                            StatusCode::BAD_GATEWAY,
+                        ));
                     }
                 };
 
                 if res_body_bytes.len() < 5 {
-                    return Ok(build_error_response("Invalid gRPC Response", StatusCode::BAD_GATEWAY));
+                    return Ok(build_error_response(
+                        "Invalid gRPC Response",
+                        StatusCode::BAD_GATEWAY,
+                    ));
                 }
 
-                let payload_len = u32::from_be_bytes(res_body_bytes[1..5].try_into().unwrap()) as usize;
+                let payload_len =
+                    u32::from_be_bytes(res_body_bytes[1..5].try_into().unwrap()) as usize;
                 if res_body_bytes.len() < 5 + payload_len {
-                    return Ok(build_error_response("Truncated gRPC Response", StatusCode::BAD_GATEWAY));
+                    return Ok(build_error_response(
+                        "Truncated gRPC Response",
+                        StatusCode::BAD_GATEWAY,
+                    ));
                 }
-                
+
                 let raw_protobuf_res = &res_body_bytes[5..5 + payload_len];
 
                 let mut dynamic_res_msg = DynamicMessage::new(method_desc.output());
                 if let Err(e) = dynamic_res_msg.merge(raw_protobuf_res) {
-                    return Ok(build_error_response(&format!("Parse error: {}", e), StatusCode::BAD_GATEWAY));
+                    return Ok(build_error_response(
+                        &format!("Parse error: {}", e),
+                        StatusCode::BAD_GATEWAY,
+                    ));
                 }
 
                 let response_json = match serde_json::to_string(&dynamic_res_msg) {
                     Ok(s) => s,
                     Err(e) => {
-                        return Ok(build_error_response(&format!("JSON encode error: {}", e), StatusCode::INTERNAL_SERVER_ERROR));
+                        return Ok(build_error_response(
+                            &format!("JSON encode error: {}", e),
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ));
                     }
                 };
 
                 return Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(response_json)).map_err(SrvError::from).boxed())
+                    .body(
+                        Full::new(Bytes::from(response_json))
+                            .map_err(SrvError::from)
+                            .boxed(),
+                    )
                     .unwrap());
             }
             Err(e) => {
-                error!("{}: Backend connection failed to {}: {}", server_name, backend_base_uri, e);
+                error!(
+                    "{}: Backend connection failed to {}: {}",
+                    server_name, backend_base_uri, e
+                );
                 route_info.target.mark_dead(backend_base_uri);
                 failed_nodes.push(backend_base_uri.clone());
 
                 if attempts <= max_retries {
-                    warn!("{}: Retrying gRPC request... (Attempt {}/{})", server_name, attempts, max_retries);
+                    warn!(
+                        "{}: Retrying gRPC request... (Attempt {}/{})",
+                        server_name, attempts, max_retries
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;
                 } else {
@@ -247,8 +334,10 @@ pub async fn build_grpc_pool(
             }
 
             if params.authentication == crate::configuration::AuthenticationMethod::ClientCert
-                && let (Some(cert_path), Some(key_path)) = (&params.ssl_client_certificate, &params.ssl_client_key)
-                && let (Ok(cert_pem), Ok(key_pem)) = (std::fs::read(cert_path), std::fs::read(key_path))
+                && let (Some(cert_path), Some(key_path)) =
+                    (&params.ssl_client_certificate, &params.ssl_client_key)
+                && let (Ok(cert_pem), Ok(key_pem)) =
+                    (std::fs::read(cert_path), std::fs::read(key_path))
             {
                 let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
                 tls = tls.identity(identity);
@@ -264,14 +353,18 @@ pub async fn build_grpc_pool(
     tx.send(ServerReflectionRequest {
         host: String::new(),
         message_request: Some(MessageRequest::ListServices(String::new())),
-    }).await?;
+    })
+    .await?;
 
-    let response: tonic::Response<tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>> = 
-        reflection_client.server_reflection_info(tonic::Request::new(ReceiverStream::new(rx))).await?;
-    
+    let response: tonic::Response<
+        tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>,
+    > = reflection_client
+        .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
+        .await?;
+
     let mut response_stream = response.into_inner();
     let mut current_services = Vec::new();
-    
+
     if let Some(res) = response_stream.message().await?
         && let Some(tonic_reflection::pb::v1alpha::server_reflection_response::MessageResponse::ListServicesResponse(list_res)) = res.message_response
     {
@@ -292,11 +385,15 @@ pub async fn build_grpc_pool(
         tx.send(ServerReflectionRequest {
             host: String::new(),
             message_request: Some(MessageRequest::FileContainingSymbol(service_name)),
-        }).await?;
+        })
+        .await?;
 
-        let response: tonic::Response<tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>> = 
-            reflection_client.server_reflection_info(tonic::Request::new(ReceiverStream::new(rx))).await?;
-        
+        let response: tonic::Response<
+            tonic::Streaming<tonic_reflection::pb::v1alpha::ServerReflectionResponse>,
+        > = reflection_client
+            .server_reflection_info(tonic::Request::new(ReceiverStream::new(rx)))
+            .await?;
+
         let mut response_stream = response.into_inner();
 
         if let Some(res) = response_stream.message().await?

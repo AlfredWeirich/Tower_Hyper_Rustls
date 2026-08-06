@@ -112,6 +112,12 @@ pub struct Config {
     /// The base OID prefix for custom PKI extensions
     /// (e.g. `"2.25"` for UUID-based OIDs).
     pub pki_base_oid: Option<String>,
+    /// Flag to enable or disable OpenTelemetry Tracing (Jaeger)
+    pub enable_opentelemetry: Option<bool>,
+    /// Jaeger OTLP gRPC endpoint (default: "http://localhost:4317")
+    pub jaeger_endpoint: Option<String>,
+    /// Log level for traces exported to Jaeger (default: "info")
+    pub otel_log_level: Option<String>,
 
     /// Pre-parsed integer representation of [`pki_base_oid`](Config::pki_base_oid).
     /// Computed in [`Config::init`] for fast OID prefix matching in
@@ -1131,11 +1137,13 @@ impl Layers {
                 other => Err(Error::msg(format!("Unknown layer type: {}", other))),
             })
             .collect::<Result<_, _>>()?;
-            
+
         // Fallback: If SecurityHeaders was not explicitly enabled in the list,
         // we add it with standard strict defaults to protect the server.
         if !self.enabled.iter().any(|n| n == "SecurityHeaders") {
-            layers.push(MiddlewareLayer::SecurityHeaders(SecurityHeadersConfig::default()));
+            layers.push(MiddlewareLayer::SecurityHeaders(
+                SecurityHeadersConfig::default(),
+            ));
         }
 
         Ok(layers)

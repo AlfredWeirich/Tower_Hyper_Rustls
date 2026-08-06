@@ -42,7 +42,12 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 x509-parser = "0.18.0"
 mimalloc = { version = "*", features = ["v3"] }
-tower-http = { version = "0.5.2", features = ["cors"] }
+tower-http = { version = "0.5.2", features = ["cors", "trace"] }
+opentelemetry = { version = "0.24", features = ["trace"] }
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.17", features = ["grpc-tonic"] }
+opentelemetry-http = "0.13"
+tracing-opentelemetry = "0.25"
 
 
 # Optional/Disabled dependencies

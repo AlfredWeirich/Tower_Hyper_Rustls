@@ -8,6 +8,11 @@
 # Manual override is useful for high-performance tuning on dedicated hardware.
 tokio_threads = 50
 
+# Enable or disable background OpenTelemetry Tracing (Jaeger)
+# If false, TraceLayer is silently skipped and no background export tasks are started.
+enable_opentelemetry = true
+jaeger_endpoint = "http://localhost:4317"
+otel_log_level = "info"
 # The Base Object Identifier (OID) used for security validation.
 # This acts as the root for interpreting client certificate extensions and JWT claims.
 # Private Enterprise Number (PEN)

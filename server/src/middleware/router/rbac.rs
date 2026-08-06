@@ -1,9 +1,12 @@
-use std::sync::Arc;
 use hyper::{Response, StatusCode};
+use std::sync::Arc;
 use tracing::warn;
 
-use crate::{ServiceRespBody, configuration::{ParsedRoute, UserRole}};
 use super::build_error_response;
+use crate::{
+    ServiceRespBody,
+    configuration::{ParsedRoute, UserRole},
+};
 
 /// Enforces Role-Based Access Control (RBAC).
 ///

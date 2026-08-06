@@ -50,10 +50,10 @@ pub mod logger;
 pub mod rate_limiter;
 /// Reverse-proxy routing service with RBAC and URI rewriting.
 pub mod router;
-/// Request timing / duration measurement.
-pub mod timing;
 /// Security Headers injection layer.
 pub mod security_headers;
+/// Request timing / duration measurement.
+pub mod timing;
 
 // ── Convenience re-exports ───────────────────────────────────────────────────
 
@@ -67,5 +67,5 @@ pub use limit::MaxPayloadLayer;
 pub use logger::LoggerLayer;
 pub use rate_limiter::{SimpleRateLimiterLayer, TokenBucketRateLimiterLayer};
 pub use router::RouterService;
-pub use timing::TimingLayer;
 pub use security_headers::SecurityHeadersLayer;
+pub use timing::TimingLayer;

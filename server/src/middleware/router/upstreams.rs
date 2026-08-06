@@ -1,5 +1,5 @@
-use hyper::http::uri::{PathAndQuery, Uri};
 use crate::SrvError;
+use hyper::http::uri::{PathAndQuery, Uri};
 
 /// Reconstructs the Request URI for the upstream server.
 ///

@@ -146,8 +146,11 @@ pub fn tls_config(
                 trace!("{server_name}: Added CA from {}", config.ssl_client_ca);
             }
             if let Some(ref crl_path) = config.ssl_client_crl {
-                let crl = CertificateRevocationListDer::from_pem_file(crl_path)
-                    .map_err(|e| Error::msg(format!("{server_name}: Failed to load CRL from '{crl_path}': {e}")))?;
+                let crl = CertificateRevocationListDer::from_pem_file(crl_path).map_err(|e| {
+                    Error::msg(format!(
+                        "{server_name}: Failed to load CRL from '{crl_path}': {e}"
+                    ))
+                })?;
                 trace!("{server_name}: Added CRL from {crl_path}");
                 crls.push(crl);
             }
@@ -290,9 +293,13 @@ pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<Stri
             tracing::debug!("Successfully parsed X509 cert. Looking for SAN extension...");
             let mut found_san_ext = false;
             for ext in x509.extensions() {
-                if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+                if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
+                    ext.parsed_extension()
+                {
                     found_san_ext = true;
-                    tracing::debug!("Found SubjectAlternativeName extension. Iterating GeneralNames...");
+                    tracing::debug!(
+                        "Found SubjectAlternativeName extension. Iterating GeneralNames..."
+                    );
                     for name in &san.general_names {
                         tracing::debug!("Found GeneralName: {:?}", name);
                         if let x509_parser::extensions::GeneralName::DNSName(domain) = name {
@@ -306,7 +313,7 @@ pub fn extract_cert_san_and_pem(cert_der: &[u8]) -> (Option<String>, Option<Stri
             if !found_san_ext {
                 tracing::debug!("No SubjectAlternativeName extension found in client cert!");
             }
-        },
+        }
         Err(e) => {
             tracing::warn!("Failed to parse client cert DER: {:?}", e);
         }

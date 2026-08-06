@@ -2,7 +2,7 @@
 //!
 //! This is the main executable for the server application. It orchestrates:
 //! RUST_LOG=warn,proxy_server=trace,proxy_server::middleware::logger=trace cargo run -p proxy_server --release
-//! 
+//!
 //! 1. **Configuration loading** via [`Config::init`].
 //! 2. **Tokio runtime creation** with a configurable number of worker threads.
 //! 3. **Tracing / logging setup** (stdout + optional rolling-file appender).
@@ -83,20 +83,20 @@ use proxy_server::{
     },
     middleware::{
         CountingLayer, DelayLayer, EchoService, InspectionLayer, JwtAuthLayer, LoggerLayer,
-        MaxPayloadLayer, RouterService, SimpleRateLimiterLayer, TimingLayer,
-        TokenBucketRateLimiterLayer, SecurityHeadersLayer,
+        MaxPayloadLayer, RouterService, SecurityHeadersLayer, SimpleRateLimiterLayer, TimingLayer,
+        TokenBucketRateLimiterLayer,
         alt_svc::AltSvcLayer,
         compression::{SrvCompressionLayer, SrvDecompressionLayer},
     },
-    tls_conf::{extract_oids_from_cert, extract_cert_san_and_pem, tls_config},
+    tls_conf::{extract_cert_san_and_pem, extract_oids_from_cert, tls_config},
 };
 
 use http_body_util::BodyExt;
 use hyper::{Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
-use rustls::ServerConfig as RustlsServerConfig;
 use proxy_server::H3Body;
+use rustls::ServerConfig as RustlsServerConfig;
 use std::sync::Mutex;
 
 ///    Main entry point for the server application.
@@ -126,19 +126,22 @@ fn main() -> Result<(), Error> {
     // Determine the number of Tokio worker threads. Defaults to 2x logical CPUs if not specified.
     let tokio_threads = config.tokio_threads.unwrap_or_else(num_cpus::get);
 
-    // Setup the tracing/logging system (stdout and optional file appender).
-    // Use _guard to keep the non-blocking appender alive until the end of main.
-    let _tracing_guard = setup_tracing(config.log_dir.as_deref())?;
-
-    info!("Configuration loaded from: {}", arg);
-    trace!("Full Config: {:#?}", config);
-
     // Build the high-performance multi-threaded Tokio runtime.
     let runtime = Builder::new_multi_thread()
         .worker_threads(tokio_threads)
         .enable_all()
         .build()
         .context("Failed to build Tokio runtime")?;
+
+    // Enter the runtime context so that OTLP can spawn its background export task.
+    let _rt_guard = runtime.enter();
+
+    // Setup the tracing/logging system (stdout and optional file appender).
+    // Use _guard to keep the non-blocking appender alive until the end of main.
+    let _tracing_guard = setup_tracing(&config)?;
+
+    info!("Configuration loaded from: {}", arg);
+    trace!("Full Config: {:#?}", config);
 
     // Block the main thread on the execution of the asynchronous server loop.
     runtime.block_on(main_async(config))
@@ -501,8 +504,10 @@ fn spawn_router_health_checks(server_config: &Arc<ServerConfig>, cancel_token: C
         for route in &server_config.parsed_routes {
             // The interval (in seconds) between health checks. 0 means disabled.
             let interval = route.target.active_health_check_interval;
-            let is_grpc = route.backend_type == proxy_server::configuration::RouteBackendType::GrpcTranscoding 
-                || route.backend_type == proxy_server::configuration::RouteBackendType::GrpcPassthrough;
+            let is_grpc = route.backend_type
+                == proxy_server::configuration::RouteBackendType::GrpcTranscoding
+                || route.backend_type
+                    == proxy_server::configuration::RouteBackendType::GrpcPassthrough;
 
             // If interval > 0, the user wants the proxy to automatically ping the servers in the background
             // to evict them from the load-balancer if they die, and re-add them when they recover.
@@ -768,14 +773,43 @@ fn build_service_stack(server_config: &Arc<ServerConfig>) -> Result<BoxedCloneSe
         ServiceType::Router => RouterService::new(server_config.clone()).boxed_clone(),
     };
 
-    Ok(apply_layers(
+    let applied = apply_layers(
         base_service, // The core service (Echo or Router) handling the request
         layers,
         server_config.static_name.expect("static_name missing"),
         compiled_allowed_pathes.clone(),
         server_config.port,
         Arc::new(server_config.oid_mapping.clone()),
-    ))
+    );
+
+    use tower_http::trace::{DefaultOnResponse, TraceLayer};
+    use tracing::{Level, info_span};
+
+    let traced = tower::ServiceBuilder::new()
+        .map_response(|res: hyper::Response<_>| {
+            res.map(|b| {
+                // Box the body to match SrvBody (BoxBody<Bytes, SrvError>)
+                http_body_util::BodyExt::map_err(b, proxy_server::SrvError::from).boxed()
+            })
+        })
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &hyper::Request<_>| {
+                    let path = request.uri().path();
+                    let method = request.method();
+                    let otel_name = format!("{} {}", method, path);
+                    info_span!(
+                        "request",
+                        otel.name = otel_name.as_str(),
+                        http.method = %method,
+                        http.uri = %request.uri()
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
+        .service(applied);
+
+    Ok(traced.boxed_clone())
 }
 
 /// Applies the configured middleware layers to the base service.
@@ -820,25 +854,27 @@ fn apply_layers(
                     .layer(svc)
                     .boxed_clone()
             }
-            MiddlewareLayer::JwtAuth(keys) => JwtAuthLayer::new(keys, server_name, oid_mapping.clone())
-                .layer(svc)
-                .boxed_clone(),
+            MiddlewareLayer::JwtAuth(keys) => {
+                JwtAuthLayer::new(keys, server_name, oid_mapping.clone())
+                    .layer(svc)
+                    .boxed_clone()
+            }
             MiddlewareLayer::RateLimiter(proxy_server::configuration::RateLimiter::Simple(cfg)) => {
                 let dur = Duration::from_secs_f32(1.0 / cfg.requests_per_second as f32);
                 SimpleRateLimiterLayer::new(dur, server_name)
                     .layer(svc)
                     .boxed_clone()
             }
-            MiddlewareLayer::RateLimiter(proxy_server::configuration::RateLimiter::TokenBucket(cfg)) => {
-                TokenBucketRateLimiterLayer::new(
-                    cfg.max_capacity,
-                    cfg.refill,
-                    Duration::from_micros(cfg.duration_micros),
-                    server_name,
-                )
-                .layer(svc)
-                .boxed_clone()
-            }
+            MiddlewareLayer::RateLimiter(
+                proxy_server::configuration::RateLimiter::TokenBucket(cfg),
+            ) => TokenBucketRateLimiterLayer::new(
+                cfg.max_capacity,
+                cfg.refill,
+                Duration::from_micros(cfg.duration_micros),
+                server_name,
+            )
+            .layer(svc)
+            .boxed_clone(),
             MiddlewareLayer::ConcurrencyLimit(max_requests) => {
                 // Here we directly use the extracted usize value
                 ConcurrencyLimit::new(svc, max_requests).boxed_clone()
@@ -859,29 +895,84 @@ fn apply_layers(
                 AltSvcLayer::new(server_port).layer(svc).boxed_clone()
             }
             MiddlewareLayer::Cors(cfg) => {
-                let origins: Vec<hyper::http::HeaderValue> = cfg.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
-                let methods: Vec<hyper::http::Method> = cfg.allowed_methods.iter().filter_map(|m| m.parse().ok()).collect();
-                let headers: Vec<hyper::http::header::HeaderName> = cfg.allowed_headers.iter().filter_map(|h| h.parse().ok()).collect();
-                
+                let origins: Vec<hyper::http::HeaderValue> = cfg
+                    .allowed_origins
+                    .iter()
+                    .filter_map(|o| o.parse().ok())
+                    .collect();
+                let methods: Vec<hyper::http::Method> = cfg
+                    .allowed_methods
+                    .iter()
+                    .filter_map(|m| m.parse().ok())
+                    .collect();
+                let headers: Vec<hyper::http::header::HeaderName> = cfg
+                    .allowed_headers
+                    .iter()
+                    .filter_map(|h| h.parse().ok())
+                    .collect();
+
                 let is_any_origin = cfg.allowed_origins.iter().any(|o| o == "*");
                 let is_any_method = cfg.allowed_methods.iter().any(|m| m == "*");
                 let is_any_header = cfg.allowed_headers.iter().any(|h| h == "*");
 
                 macro_rules! apply_cors {
                     ($cors:expr) => {
-                        $cors.allow_credentials(cfg.allow_credentials).layer(svc).boxed_clone()
+                        $cors
+                            .allow_credentials(cfg.allow_credentials)
+                            .layer(svc)
+                            .boxed_clone()
                     };
                 }
 
                 match (is_any_origin, is_any_method, is_any_header) {
-                    (true, true, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(tower_http::cors::Any).allow_headers(tower_http::cors::Any)),
-                    (true, true, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(tower_http::cors::Any).allow_headers(headers)),
-                    (true, false, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(methods).allow_headers(tower_http::cors::Any)),
-                    (true, false, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(methods).allow_headers(headers)),
-                    (false, true, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(tower_http::cors::Any).allow_headers(tower_http::cors::Any)),
-                    (false, true, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(tower_http::cors::Any).allow_headers(headers)),
-                    (false, false, true) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(tower_http::cors::Any)),
-                    (false, false, false) => apply_cors!(tower_http::cors::CorsLayer::new().allow_origin(origins).allow_methods(methods).allow_headers(headers)),
+                    (true, true, true) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(tower_http::cors::Any)
+                            .allow_methods(tower_http::cors::Any)
+                            .allow_headers(tower_http::cors::Any)
+                    ),
+                    (true, true, false) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(tower_http::cors::Any)
+                            .allow_methods(tower_http::cors::Any)
+                            .allow_headers(headers)
+                    ),
+                    (true, false, true) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(tower_http::cors::Any)
+                            .allow_methods(methods)
+                            .allow_headers(tower_http::cors::Any)
+                    ),
+                    (true, false, false) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(tower_http::cors::Any)
+                            .allow_methods(methods)
+                            .allow_headers(headers)
+                    ),
+                    (false, true, true) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(origins)
+                            .allow_methods(tower_http::cors::Any)
+                            .allow_headers(tower_http::cors::Any)
+                    ),
+                    (false, true, false) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(origins)
+                            .allow_methods(tower_http::cors::Any)
+                            .allow_headers(headers)
+                    ),
+                    (false, false, true) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(origins)
+                            .allow_methods(methods)
+                            .allow_headers(tower_http::cors::Any)
+                    ),
+                    (false, false, false) => apply_cors!(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(origins)
+                            .allow_methods(methods)
+                            .allow_headers(headers)
+                    ),
                 }
             }
             MiddlewareLayer::SecurityHeaders(cfg) => {
@@ -986,7 +1077,7 @@ async fn run_tcp_listener(
 
                                     let mut client_cert_pem = None;
                                     let mut client_cert_san = None;
-                                    
+
                                     let client_oids = if let Some(c) = certs.and_then(|c| c.first()) {
                                         let (pem, san) = extract_cert_san_and_pem(c.as_ref());
                                         client_cert_pem = pem;
@@ -1150,7 +1241,12 @@ async fn handle_h3_connection(
     // Convert OIDs (Strings) to Roles (Enums) ONCE for the whole connection.
     let mut roles: Vec<proxy_server::configuration::UserRole> = oids
         .iter()
-        .map(|oid| oid_mapping.get(oid).cloned().unwrap_or_else(proxy_server::configuration::UserRole::guest))
+        .map(|oid| {
+            oid_mapping
+                .get(oid)
+                .cloned()
+                .unwrap_or_else(proxy_server::configuration::UserRole::guest)
+        })
         .filter(|role| *role != proxy_server::configuration::UserRole::guest())
         .collect();
 
@@ -1180,7 +1276,7 @@ async fn handle_h3_connection(
                 let svc = base_svc.clone();
                 // Cheap clone of the already calculated roles
                 let roles_for_req = shared_roles.clone();
-                
+
                 let req_cert_pem = client_cert_pem.clone();
                 let req_cert_san = client_cert_san.clone();
 
@@ -1190,8 +1286,13 @@ async fn handle_h3_connection(
                             let (mut sender, receiver) = stream.split();
 
                             // Pass the ROLES to new_shared
-                            let handler =
-                                ConnectionHandler::new_shared(svc, peer_addr, roles_for_req, req_cert_pem, req_cert_san);
+                            let handler = ConnectionHandler::new_shared(
+                                svc,
+                                peer_addr,
+                                roles_for_req,
+                                req_cert_pem,
+                                req_cert_san,
+                            );
 
                             let (parts, _) = req.into_parts();
                             let body = H3Body::new(receiver);
@@ -1219,13 +1320,17 @@ async fn handle_h3_connection(
                                                 };
 
                                                 if let Ok(trailers) = frame.into_trailers() {
-                                                    if sender.send_trailers(trailers).await.is_err() {
+                                                    if sender.send_trailers(trailers).await.is_err()
+                                                    {
                                                         break;
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                tracing::error!("H3 Response body stream error: {:?}", e);
+                                                tracing::error!(
+                                                    "H3 Response body stream error: {:?}",
+                                                    e
+                                                );
                                                 break;
                                             }
                                         }
@@ -1371,9 +1476,52 @@ fn build_rustls_config(config: &ServerConfig) -> Result<RustlsServerConfig, Erro
 ///   in this directory (rotated daily). If `None`, logs are written only to stdout.
 ///
 /// By default, it uses the `RUST_LOG` environment variable filter (defaulting to "info").
-fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let stdout_layer = fmt::layer().with_ansi(true);
+fn setup_tracing(config: &proxy_server::configuration::Config) -> Result<Option<WorkerGuard>, Error> {
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::Resource;
+    use tracing_subscriber::Layer as _;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let log_dir = config.log_dir.as_deref();
+    let enable_otlp = config.enable_opentelemetry.unwrap_or(false);
+    let jaeger_endpoint = config.jaeger_endpoint.as_deref().unwrap_or("http://localhost:4317");
+    let otel_log_level = config.otel_log_level.as_deref().unwrap_or("info");
+
+    // Per-layer filters
+    let console_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let telemetry_filter = EnvFilter::new(otel_log_level);
+
+    let stdout_layer = fmt::layer().with_ansi(true).with_filter(console_filter);
+
+    let telemetry_layer = if enable_otlp {
+        let provider = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(jaeger_endpoint))
+            .with_trace_config(opentelemetry_sdk::trace::Config::default().with_resource(
+                Resource::new(vec![KeyValue::new("service.name", "proxy_server")]),
+            ))
+            .install_batch(opentelemetry_sdk::runtime::Tokio)
+            .expect("Failed to initialize OTLP tracer");
+
+        // We MUST set the provider globally, otherwise it gets dropped at the end of this function
+        opentelemetry::global::set_tracer_provider(provider.clone());
+
+        // Also set the global TextMapPropagator so we can inject traceparent headers into outgoing requests!
+        opentelemetry::global::set_text_map_propagator(
+            opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+        );
+
+        let tracer = provider.tracer("proxy_server");
+        Some(
+            tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_filter(telemetry_filter),
+        )
+    } else {
+        None
+    };
 
     if let Some(dir) = log_dir {
         let file_appender = RollingFileAppender::builder()
@@ -1385,16 +1533,15 @@ fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {
         // PERFORMANCE FIX: Use non_blocking wrapper
         let (non_blocking_appender, _guard) = tracing_appender::non_blocking(file_appender);
 
-        // Note: You must hold `_guard` until the end of main(),
-        // or logs might be dropped on shutdown.
-        // You might need to change the function signature to return the guard.
-
         let file_layer = fmt::layer()
             .with_ansi(false)
-            .with_writer(non_blocking_appender);
+            .with_writer(non_blocking_appender)
+            .with_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            );
 
         let subscriber = Registry::default()
-            .with(env_filter)
+            .with(telemetry_layer)
             .with(stdout_layer)
             .with(file_layer);
 
@@ -1403,7 +1550,7 @@ fn setup_tracing(log_dir: Option<&str>) -> Result<Option<WorkerGuard>, Error> {
         // Return the guard so it's not dropped
         Ok(Some(_guard))
     } else {
-        let subscriber = Registry::default().with(env_filter).with(stdout_layer);
+        let subscriber = Registry::default().with(telemetry_layer).with(stdout_layer);
         tracing::subscriber::set_global_default(subscriber)?;
         Ok(None)
     }

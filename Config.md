@@ -121,6 +121,8 @@ Diese Konfiguration steuert die sichere Weitergabe von Client-Identitäten an Ba
 
 * `header_cert`: String. HTTP-Header-Name für das URL-codierte Client-Zertifikat.
 * `header_san`: String. HTTP-Header-Name für den SAN (Subject Alternative Name).
+* `header_roles`: String. HTTP-Header-Name für die weitergereichten Benutzer-Rollen (z.B. `x-user-roles`).
+* `header_client_ip`: String. HTTP-Header-Name für die Client-IP-Adresse (z.B. `x-forwarded-for`).
 
 ---
 

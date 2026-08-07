@@ -572,6 +572,10 @@ pub struct ClientCertForwardingConfig {
     pub header_cert: Option<String>,
     /// The HTTP header name used to forward the client certificate's SAN (Subject Alternative Name).
     pub header_san: Option<String>,
+    /// The HTTP header name used to forward the mapped user roles (e.g., 'x-user-roles').
+    pub header_roles: Option<String>,
+    /// The HTTP header name used to forward the client's IP address (e.g., 'x-forwarded-for').
+    pub header_client_ip: Option<String>,
 }
 
 /// Configuration for the simple fixed-window rate limiter.

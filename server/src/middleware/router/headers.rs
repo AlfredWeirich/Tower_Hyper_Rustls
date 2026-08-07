@@ -76,6 +76,16 @@ pub fn prepare_proxy_headers(
                 original_headers.remove(&hdr_name);
             }
         }
+        if let Some(header_roles) = &forward_config.header_roles {
+            if let Ok(hdr_name) = header::HeaderName::from_bytes(header_roles.as_bytes()) {
+                original_headers.remove(&hdr_name);
+            }
+        }
+        if let Some(header_ip) = &forward_config.header_client_ip {
+            if let Ok(hdr_name) = header::HeaderName::from_bytes(header_ip.as_bytes()) {
+                original_headers.remove(&hdr_name);
+            }
+        }
 
         tracing::trace!("Client cert forwarding is ENABLED in config!");
         if let Some(header_cert) = &forward_config.header_cert {
@@ -115,6 +125,30 @@ pub fn prepare_proxy_headers(
                 tracing::trace!(
                     "extensions.get::<SanCertExtension>() returned None! No SAN found in request extensions."
                 );
+            }
+        }
+        if let Some(header_roles) = &forward_config.header_roles {
+            if let Some(roles) = extensions.get::<std::sync::Arc<Vec<crate::configuration::UserRole>>>() {
+                if !roles.is_empty() {
+                    let roles_str = roles.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join(", ");
+                    if let Ok(hdr_val) = header::HeaderValue::from_str(&roles_str) {
+                        if let Ok(hdr_name) = header::HeaderName::from_bytes(header_roles.as_bytes()) {
+                            tracing::trace!("Injecting User Roles into header: {}", hdr_name);
+                            original_headers.insert(hdr_name, hdr_val);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(header_ip) = &forward_config.header_client_ip {
+            if let Some(addr) = extensions.get::<std::net::SocketAddr>() {
+                let ip_str = addr.ip().to_string();
+                if let Ok(hdr_val) = header::HeaderValue::from_str(&ip_str) {
+                    if let Ok(hdr_name) = header::HeaderName::from_bytes(header_ip.as_bytes()) {
+                        tracing::trace!("Injecting Client IP into header: {}", hdr_name);
+                        original_headers.insert(hdr_name, hdr_val);
+                    }
+                }
             }
         }
     } else {
